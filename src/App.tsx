@@ -435,6 +435,25 @@ const notificationPayloadPlanId = (payload: Record<string, unknown> | null | und
   return typeof planId === "string" ? planId : "";
 };
 
+const notificationSourceUserId = (payload: Record<string, unknown> | null | undefined): string => {
+  if (!payload) return "";
+  const candidateKeys = ["invitee_id", "requester_id", "actor_id", "from_user_id", "owner_id", "inviter_id", "user_id"];
+  for (const key of candidateKeys) {
+    const value = payload[key];
+    if (typeof value === "string" && value) return value;
+  }
+  return "";
+};
+
+const formatNotificationSourceType = (type: string): string => {
+  if (!type) return "Activity";
+  return type
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
+};
+
 const isDateInRange = (dateKey: string, fromDate: string, toDate: string) => {
   const [start, end] = fromDate <= toDate ? [fromDate, toDate] : [toDate, fromDate];
   return dateKey >= start && dateKey <= end;
@@ -735,6 +754,8 @@ export default function App() {
   const [dayTimelineRowSize, setDayTimelineRowSize] = useState(22);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const dayTimelineRef = useRef<HTMLDivElement | null>(null);
+  const activityListRef = useRef<HTMLDivElement | null>(null);
+  const activityAutoReadPendingRef = useRef<Set<string>>(new Set());
   const socialUserId = isUuid(cloudUser?.id) ? (cloudUser?.id ?? null) : null;
 
   const storeRef = useRef(store);
@@ -2376,6 +2397,32 @@ export default function App() {
   }, [cloudFriends, refreshCloudFriends, socialUserId]);
 
   useEffect(() => {
+    if (!notificationsOpen || notificationsTab !== "activity") return;
+    const root = activityListRef.current;
+    if (!root) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting || entry.intersectionRatio < 0.55) continue;
+          const target = entry.target as HTMLElement;
+          const notificationId = target.dataset.notificationId ?? "";
+          const readFlag = target.dataset.notificationRead ?? "0";
+          if (!notificationId || readFlag === "1") continue;
+          if (activityAutoReadPendingRef.current.has(notificationId)) continue;
+          activityAutoReadPendingRef.current.add(notificationId);
+          void markAsRead(notificationId).finally(() => {
+            activityAutoReadPendingRef.current.delete(notificationId);
+          });
+        }
+      },
+      { root, threshold: [0.55] }
+    );
+    const cards = root.querySelectorAll<HTMLElement>("[data-notification-id]");
+    cards.forEach((card) => observer.observe(card));
+    return () => observer.disconnect();
+  }, [cloudNotifications, markAsRead, notificationsOpen, notificationsTab]);
+
+  useEffect(() => {
     if (!socialUserId || !isCloudConfigured) {
       sharedPlanIdsRef.current = [];
       lastSharedSyncSignatureRef.current = "";
@@ -2675,6 +2722,14 @@ export default function App() {
         return type !== "plan_invite";
       }),
     [cloudNotifications]
+  );
+  const unreadActivityCount = useMemo(
+    () => activityNotifications.filter((notification) => !notification.is_read).length,
+    [activityNotifications]
+  );
+  const unreadInviteCount = useMemo(
+    () => pendingIncomingPlanInvites.length,
+    [pendingIncomingPlanInvites]
   );
   const headerMenus = [
     {
@@ -4000,7 +4055,7 @@ export default function App() {
               </Panel>
               <Panel variant="card" borderWidth={1} className="notifications-summary-card">
                 <span className="notifications-summary-label">Unread Activity</span>
-                <strong>{activityNotifications.filter((notification) => !notification.is_read).length}</strong>
+                <strong>{unreadActivityCount}</strong>
               </Panel>
             </div>
             <div className="notifications-tabs" role="tablist" aria-label="Notifications tabs">
@@ -4010,7 +4065,8 @@ export default function App() {
                 className="notifications-tab-btn"
                 onClick={() => setNotificationsTab("activity")}
               >
-                Activity
+                <span>Activity</span>
+                {unreadActivityCount > 0 ? <span className="notifications-tab-count">{unreadActivityCount}</span> : null}
               </Button>
               <Button
                 type="button"
@@ -4018,7 +4074,8 @@ export default function App() {
                 className="notifications-tab-btn"
                 onClick={() => setNotificationsTab("invites")}
               >
-                Plan Invites
+                <span>Plan Invites</span>
+                {unreadInviteCount > 0 ? <span className="notifications-tab-count">{unreadInviteCount}</span> : null}
               </Button>
             </div>
             <div className="notifications-sections">
@@ -4114,30 +4171,53 @@ export default function App() {
                     </Button>
                   </div>
                 </div>
-                <div className="notifications-list">
+                <div className="notifications-list" ref={activityListRef}>
                   {activityNotifications.length > 0 ? (
-                    activityNotifications.map((notification) => (
-                      <Panel key={notification.id} variant="card" borderWidth={1} className="notification-card prefs-section">
+                    activityNotifications.map((notification) => {
+                      const sourceUserId = notificationSourceUserId(notification.payload);
+                      const isSelfSource = Boolean(sourceUserId && socialUserId && sourceUserId === socialUserId);
+                      const sourcePerson = sourceUserId ? cloudFriendPeople.find((person) => person.id === sourceUserId) : null;
+                      const sourceName = sourceUserId
+                        ? isSelfSource
+                          ? "You"
+                          : sourcePerson?.name ?? "User"
+                        : formatNotificationSourceType(notification.type);
+                      const sourceAvatar = sourceUserId
+                        ? isSelfSource
+                          ? authAvatarUrl
+                          : sourcePerson?.avatarUrl ?? null
+                        : null;
+                      return (
+                      <Panel
+                        key={notification.id}
+                        variant="card"
+                        borderWidth={1}
+                        className="notification-card prefs-section"
+                        data-notification-id={notification.id}
+                        data-notification-read={notification.is_read ? "1" : "0"}
+                      >
                         <div className="notification-card-head">
-                          <h4>{notification.title}</h4>
+                          <span className="notification-owner-inline">
+                            {sourceAvatar ? (
+                              <span className="pill-icon-badge user-pill-avatar manager-card-avatar" aria-hidden="true">
+                                <img src={sourceAvatar} alt={sourceName} loading="eager" referrerPolicy="no-referrer" crossOrigin="anonymous" />
+                              </span>
+                            ) : null}
+                            <span className="notification-owner-name">{sourceName}</span>
+                          </span>
                           <span className={`notification-chip ${notification.is_read ? "status-read" : "status-unread"}`}>
                             {notification.is_read ? "Read" : "Unread"}
                           </span>
                         </div>
                         <p className="notification-card-body">{notification.body}</p>
-                        <p className="notification-card-meta">Type: {notification.type}</p>
                         <div className="notification-actions">
-                          {!notification.is_read ? (
-                            <Button type="button" variant="ghost" onClick={() => void markAsRead(notification.id)}>
-                              Mark Read
-                            </Button>
-                          ) : null}
                           <Button type="button" variant="delete" onClick={() => void deleteActivityNotification(notification.id)}>
                             Delete
                           </Button>
                         </div>
                       </Panel>
-                    ))
+                    );
+                    })
                   ) : (
                     <p className="cloud-meta">No activity items.</p>
                   )}

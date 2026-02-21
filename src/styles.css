@@ -415,7 +415,8 @@ body,
 .notifications-sections {
   display: grid;
   gap: 12px;
-  min-height: 0;
+  min-height: auto;
+  overflow: visible;
 }
 
 .notifications-tabs {
@@ -426,6 +427,10 @@ body,
 
 .notifications-tab-btn {
   width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .notifications-tabs .notifications-tab-btn:first-child {
@@ -438,6 +443,23 @@ body,
   border-bottom-left-radius: 0 !important;
 }
 
+.notifications-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--ef-button-text);
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    linear-gradient(135deg, rgba(255, 255, 255, 0.38), rgba(255, 255, 255, 0.2)) border-box;
+  border: 1px solid transparent;
+}
+
 .manager-modal {
   display: flex;
   flex-direction: column;
@@ -446,11 +468,12 @@ body,
 }
 
 .manager-section {
-  min-height: 0;
+  min-height: auto;
 }
 
 .manager-list {
-  max-height: min(42vh, 360px);
+  max-height: none;
+  overflow: visible;
 }
 
 .manager-actions {
@@ -717,6 +740,7 @@ body,
   padding: 10px;
   display: grid;
   gap: 10px;
+  min-height: auto;
 }
 
 .notifications-section-header {
@@ -759,16 +783,20 @@ body,
 }
 
 .notifications-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  max-height: 280px;
-  overflow: auto;
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
   padding-right: 2px;
 }
 
 .notification-card {
   display: grid;
   gap: 8px;
+  flex: 0 0 auto;
   border-radius: 12px !important;
   border: 0 !important;
   position: relative;
@@ -822,7 +850,7 @@ body,
 
 .notification-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   align-items: stretch;
   gap: 6px;
 }
@@ -910,11 +938,11 @@ body,
   }
 
   .notifications-list {
-    max-height: min(38vh, 280px);
+    max-height: none;
   }
 
   .manager-list {
-    max-height: min(40vh, 300px);
+    max-height: none;
   }
 
   .notifications-section {
