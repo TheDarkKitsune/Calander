@@ -496,7 +496,9 @@ export const syncSharedPlanInvites = async (ownerId: string, planId: string, inv
       invitee_id: inviteeId,
       status: "pending",
     }));
-    const { error } = await supabase.from("calendar_plan_invites").insert(rows);
+    const { error } = await supabase
+      .from("calendar_plan_invites")
+      .upsert(rows, { onConflict: "plan_id,inviter_id,invitee_id" });
     if (error) return { error: error.message };
 
     const notifications = toInsert.map((inviteeId) => ({
@@ -507,7 +509,10 @@ export const syncSharedPlanInvites = async (ownerId: string, planId: string, inv
       payload: { plan_id: planId, inviter_id: ownerId },
     }));
     const { error: notificationError } = await supabase.from("calendar_notifications").insert(notifications);
-    if (notificationError) return { error: notificationError.message };
+    if (notificationError) {
+      // Notification policies can block cross-user inserts; invites should still succeed.
+      // Ignore this so visibility and invite state are not broken by notification permissions.
+    }
   }
 
   if (toDelete.length > 0) {
