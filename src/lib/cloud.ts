@@ -48,6 +48,7 @@ const createSupabaseClient = () =>
 const supabase: SupabaseClient | null = isCloudConfigured
   ? (globalThis.__calanderSupabase ?? (globalThis.__calanderSupabase = createSupabaseClient()))
   : null;
+let canWriteCalendarNotifications = true;
 
 type OverrideTokens = {
   access_token?: string;
@@ -496,10 +497,16 @@ export const syncSharedPlanInvites = async (ownerId: string, planId: string, inv
       invitee_id: inviteeId,
       status: "pending",
     }));
-    const { error } = await supabase
-      .from("calendar_plan_invites")
-      .upsert(rows, { onConflict: "plan_id,inviter_id,invitee_id" });
-    if (error) return { error: error.message };
+    const { error } = await supabase.from("calendar_plan_invites").insert(rows);
+    const message = (error?.message ?? "").toLowerCase();
+    const details = ((error as { details?: string } | null)?.details ?? "").toLowerCase();
+    const duplicateConflict =
+      !!error &&
+      (message.includes("duplicate key") ||
+        message.includes("already exists") ||
+        details.includes("duplicate key") ||
+        details.includes("already exists"));
+    if (error && !duplicateConflict) return { error: error.message };
 
     const notifications = toInsert.map((inviteeId) => ({
       user_id: inviteeId,
@@ -508,10 +515,15 @@ export const syncSharedPlanInvites = async (ownerId: string, planId: string, inv
       body: "You have been invited to a plan.",
       payload: { plan_id: planId, inviter_id: ownerId },
     }));
-    const { error: notificationError } = await supabase.from("calendar_notifications").insert(notifications);
-    if (notificationError) {
-      // Notification policies can block cross-user inserts; invites should still succeed.
-      // Ignore this so visibility and invite state are not broken by notification permissions.
+    if (canWriteCalendarNotifications) {
+      const { error: notificationError } = await supabase.from("calendar_notifications").insert(notifications);
+      if (notificationError) {
+        const message = (notificationError.message ?? "").toLowerCase();
+        if (message.includes("forbidden") || message.includes("permission") || message.includes("row-level security")) {
+          canWriteCalendarNotifications = false;
+        }
+        // Notification policies can block cross-user inserts; invites should still succeed.
+      }
     }
   }
 
