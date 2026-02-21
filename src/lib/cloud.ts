@@ -49,6 +49,35 @@ const supabase: SupabaseClient | null = isCloudConfigured
   ? (globalThis.__calanderSupabase ?? (globalThis.__calanderSupabase = createSupabaseClient()))
   : null;
 
+type OverrideTokens = {
+  access_token?: string;
+  refresh_token?: string;
+};
+
+const AUTH_OVERRIDE_KEYS = [
+  "calander-auth-override",
+  "calendar-auth-override",
+  "enderfall-calander-auth-override",
+  "appbrowser-auth-override",
+];
+
+const readOverrideTokens = (): OverrideTokens | null => {
+  if (typeof window === "undefined") return null;
+  for (const key of AUTH_OVERRIDE_KEYS) {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw) as OverrideTokens;
+      if (parsed.access_token && parsed.refresh_token) {
+        return parsed;
+      }
+    } catch {
+      // ignore malformed override payloads
+    }
+  }
+  return null;
+};
+
 export type CloudRecord = {
   room_id: string;
   payload: unknown;
@@ -73,6 +102,25 @@ export const getCloudUser = async () => {
   if (!supabase) return null;
   const { data } = await supabase.auth.getUser();
   return data.user ?? null;
+};
+
+export const syncCloudSessionFromOverride = async () => {
+  if (!supabase) {
+    return { user: null as User | null, error: "Cloud is not configured." };
+  }
+  const tokens = readOverrideTokens();
+  if (!tokens?.access_token || !tokens.refresh_token) {
+    return { user: null as User | null, error: null as string | null };
+  }
+  const { error: sessionError } = await supabase.auth.setSession({
+    access_token: tokens.access_token,
+    refresh_token: tokens.refresh_token,
+  });
+  if (sessionError) {
+    return { user: null as User | null, error: sessionError.message };
+  }
+  const { data, error } = await supabase.auth.getUser();
+  return { user: data.user ?? null, error: error?.message ?? null };
 };
 
 export const listCloudFriends = async (userId: string) => {
@@ -488,6 +536,12 @@ export const listVisibleSharedPlans = async (userId: string) => {
   if (inviteError) return { plans: [] as SharedPlanPayload[], error: inviteError.message };
 
   const invitedPlanIds = [...new Set((acceptedInvites ?? []).map((row) => (row as { plan_id: string }).plan_id))];
+  const { data: invitedByVisibilityRows, error: invitedByVisibilityError } = await supabase
+    .from("calendar_shared_plans")
+    .select("*")
+    .contains("invited_ids", [userId]);
+  if (invitedByVisibilityError) return { plans: [] as SharedPlanPayload[], error: invitedByVisibilityError.message };
+
   let invitedRows: SharedPlanPayload[] = [];
   if (invitedPlanIds.length > 0) {
     const { data, error } = await supabase
@@ -498,7 +552,11 @@ export const listVisibleSharedPlans = async (userId: string) => {
     invitedRows = (data ?? []) as SharedPlanPayload[];
   }
 
-  const merged = [...((ownedRows ?? []) as SharedPlanPayload[]), ...invitedRows];
+  const merged = [
+    ...((ownedRows ?? []) as SharedPlanPayload[]),
+    ...invitedRows,
+    ...((invitedByVisibilityRows ?? []) as SharedPlanPayload[]),
+  ];
   const byId = new Map<string, SharedPlanPayload>();
   merged.forEach((plan) => byId.set(plan.id, plan));
   return { plans: [...byId.values()], error: null as string | null };

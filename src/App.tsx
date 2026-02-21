@@ -27,6 +27,7 @@ import {
   signInCloud,
   signOutCloud,
   signUpCloud,
+  syncCloudSessionFromOverride,
   syncSharedPlanInvites,
   upsertSharedPlans,
   deleteSharedPlan,
@@ -1043,12 +1044,16 @@ export default function App() {
     if (!isCloudConfigured) return;
     let active = true;
 
-    getCloudUser()
-      .then((user) => {
-        if (!active) return;
-        setCloudUser(user ? { id: user.id, email: user.email ?? null } : null);
-      })
-      .catch(() => undefined);
+    const resolveUser = async () => {
+      if (runtimeIsTauri && !isMobileClient) {
+        await syncCloudSessionFromOverride();
+      }
+      const user = await getCloudUser();
+      if (!active) return;
+      setCloudUser(user ? { id: user.id, email: user.email ?? null } : null);
+    };
+
+    void resolveUser();
 
     const unsubscribe = onCloudAuthStateChange((user) => {
       if (!active) return;
@@ -1059,7 +1064,7 @@ export default function App() {
       active = false;
       unsubscribe();
     };
-  }, []);
+  }, [isMobileClient, launchToken]);
 
   useEffect(() => {
     if (!cloudUser) {
@@ -1236,6 +1241,12 @@ export default function App() {
             if (person.groupIds.some((groupId) => plan.targetGroupIds.includes(groupId))) {
               recipients.add(person.id);
             }
+          }
+        } else {
+          for (const person of cloudFriendPeople) {
+            if (person.id === selfPersonId) continue;
+            if (plan.excludedPersonIds.includes(person.id)) continue;
+            recipients.add(person.id);
           }
         }
       }
@@ -1897,11 +1908,7 @@ export default function App() {
     }));
   };
 
-  const socialUserId = isUuid(cloudUser?.id)
-    ? (cloudUser?.id ?? null)
-    : isUuid(launchToken?.userId)
-      ? (launchToken?.userId ?? null)
-      : null;
+  const socialUserId = isUuid(cloudUser?.id) ? (cloudUser?.id ?? null) : null;
 
   const refreshCloudFriends = useCallback(async () => {
     if (!socialUserId) {
@@ -1941,7 +1948,11 @@ export default function App() {
       return;
     }
     const { plans: remotePlans, error } = await listVisibleSharedPlans(socialUserId);
-    if (error) return;
+    if (error) {
+      setSyncState("error");
+      setSyncMessage(`Shared plans failed: ${error}`);
+      return;
+    }
     const normalized: Plan[] = remotePlans.map((plan) => {
       const decodedTargets = decodeSharedTargetGroupIds(Array.isArray(plan.target_group_ids) ? plan.target_group_ids : []);
       return {
@@ -2110,15 +2121,28 @@ export default function App() {
     }
     lastSharedSyncSignatureRef.current = syncSignature;
 
-    void upsertSharedPlans(socialUserId, sortedPayload);
-    ownedSharedPlans.forEach((plan) => {
-      const shareRecipients = shareRecipientIdsByPlan.get(plan.id) ?? [];
-      void syncSharedPlanInvites(
-        socialUserId,
-        plan.id,
-        shareRecipients.filter((id) => id && id !== socialUserId && isUuid(id))
-      );
-    });
+    void (async () => {
+      const upsertResult = await upsertSharedPlans(socialUserId, sortedPayload);
+      if (upsertResult.error) {
+        setSyncState("error");
+        setSyncMessage(`Plan sync failed: ${upsertResult.error}`);
+        return;
+      }
+
+      for (const plan of ownedSharedPlans) {
+        const shareRecipients = shareRecipientIdsByPlan.get(plan.id) ?? [];
+        const inviteResult = await syncSharedPlanInvites(
+          socialUserId,
+          plan.id,
+          shareRecipients.filter((id) => id && id !== socialUserId && isUuid(id))
+        );
+        if (inviteResult.error) {
+          setSyncState("error");
+          setSyncMessage(`Invite sync failed: ${inviteResult.error}`);
+          return;
+        }
+      }
+    })();
 
     const previousIds = new Set(sharedPlanIdsRef.current);
     const currentIds = new Set(ownedSharedPlans.map((plan) => plan.id));
@@ -2619,19 +2643,17 @@ export default function App() {
                         const isSelfColumn = index === 0;
                         const dayPlans = getPlansForDay(dayModalKeyDate, person.id);
                         const segments = buildDayTimelineSegments(dayPlans, dayModalKeyDate);
-                        const status = getDayStatus(person.id, dayModalKeyDate);
-                        const meta = status !== "none" ? STATUS_LOOKUP[status] : null;
                         return (
                           <Panel
                             key={person.id}
                             variant="card"
                             borderWidth={1}
                             className={`day-time-column prefs-section ${isSelfColumn ? "is-self" : ""}`}
+                            style={{ ["--plan-color" as string]: person.color }}
                           >
                             <div className="day-time-column-header">
                               <h3>{isSelfColumn ? "You" : person.name}</h3>
                               <p>{isSelfColumn ? person.name : "Friend"}</p>
-                              <span className={`day-status-pill ${meta?.swatchClass ?? "day-status-none"}`}>{meta?.short ?? "No plan"}</span>
                             </div>
                             <div className="day-time-grid">
                               {DAY_HOURS.map((hour) => (

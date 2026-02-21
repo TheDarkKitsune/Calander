@@ -1292,7 +1292,7 @@ body,
   min-width: var(--day-friend-column-width);
   gap: 0;
   overflow: hidden;
-  border-left: 1px solid color-mix(in oklab, var(--line) 84%, transparent);
+  border-left: 1px solid var(--line);
   border-radius: 0 !important;
   border-top: 0 !important;
   border-right: 0 !important;
@@ -1311,7 +1311,7 @@ body,
   min-width: var(--day-self-column-width);
   background: var(--ef-surface);
   border-left: 0;
-  border-right: 1px solid color-mix(in oklab, var(--line) 86%, transparent);
+  border-right: 1px solid var(--line);
   border-top-left-radius: 0px;
 }
 
@@ -1323,8 +1323,8 @@ body,
   max-height: none;
   align-content: center;
   padding: 8px 10px;
-  border-bottom: 1px solid color-mix(in oklab, var(--line) 86%, transparent);
-  background: rgba(245, 248, 255, 0.92);
+  border-bottom: 3px solid var(--plan-color, color-mix(in oklab, var(--line) 86%, transparent));
+  background: var(--ef-surface);
   box-sizing: border-box;
   overflow: hidden;
   position: relative;
@@ -1333,14 +1333,14 @@ body,
 .day-time-column-header h3 {
   margin: 0;
   font-size: 0.82rem;
-  color: #121826;
+  color: var(--text-strong);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
 .day-time-column-header p {
   margin: 0;
-  color: #30425f;
+  color: var(--text-soft);
   font-size: 0.72rem;
 }
 
@@ -1360,7 +1360,7 @@ body,
   content: "";
   position: absolute;
   inset: 0;
-  background: rgb(245, 248, 255);
+  background: var(--ef-surface);
   pointer-events: none;
   z-index: 0;
 }
