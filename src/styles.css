@@ -1198,6 +1198,275 @@ body,
   font-size: 0.82rem;
 }
 
+.day-timeline {
+  --day-header-height: 74px;
+  --day-row-size: 22px;
+  --day-self-scale: 1.15;
+  --day-visible-friends: 3;
+  --day-friend-column-min: 74px;
+  --day-friend-column-max: 1000px;
+  --day-friend-column-width: 90px;
+  --day-self-column-width: calc(var(--day-friend-column-width) * var(--day-self-scale));
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+}
+
+.day-details-modal .ef-modal-body > :not(.ef-modal-actions) {
+  overflow: hidden;
+}
+
+.day-details-modal .ef-modal-form {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.day-time-labels {
+  display: grid;
+  grid-template-rows: var(--day-header-height) repeat(24, var(--day-row-size));
+  border: 1px solid var(--calendar-line);
+  border-top-left-radius: var(--pill-radius);
+  border-bottom-left-radius: var(--pill-radius);
+  overflow: hidden;
+  background: var(--calendar-cell-bg);
+  min-height: 0;
+  height: 100%;
+}
+
+.day-time-label-spacer {
+  height: var(--day-header-height);
+  min-height: var(--day-header-height);
+  border-bottom: 1px solid var(--calendar-line);
+}
+
+.day-time-label {
+  border-top: 1px solid color-mix(in oklab, var(--line) 82%, transparent);
+  padding: 10px 8px 0;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.day-time-label:first-of-type {
+  border-top: 0;
+}
+
+.day-time-columns-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  width: 100%;
+  max-width: 100%;
+  container-type: inline-size;
+  --day-friend-column-width: clamp(
+    var(--day-friend-column-min),
+    calc(100cqw / (var(--day-visible-friends) + var(--day-self-scale))),
+    var(--day-friend-column-max)
+  );
+  --day-self-column-width: calc(var(--day-friend-column-width) * var(--day-self-scale));
+  padding-bottom: 0;
+  border: 1px solid var(--calendar-line);
+  border-radius: var(--pill-radius);
+  border-top-left-radius: 0px;
+  border-bottom-left-radius: 0px;
+  background: var(--calendar-cell-bg);
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.day-time-columns {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  width: max-content;
+  min-height: 100%;
+}
+
+.day-time-column {
+  display: grid !important;
+  grid-template-rows: var(--day-header-height) minmax(0, 1fr);
+  flex: 0 0 var(--day-friend-column-width);
+  min-width: var(--day-friend-column-width);
+  gap: 0;
+  overflow: hidden;
+  border-left: 1px solid color-mix(in oklab, var(--line) 84%, transparent);
+  border-radius: 0 !important;
+  border-top: 0 !important;
+  border-right: 0 !important;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  height: 100%;
+}
+
+.day-time-column.is-self {
+  position: sticky;
+  left: 0;
+  z-index: 5;
+  flex-basis: var(--day-self-column-width);
+  min-width: var(--day-self-column-width);
+  background: var(--ef-surface);
+  border-left: 0;
+  border-right: 1px solid color-mix(in oklab, var(--line) 86%, transparent);
+  border-top-left-radius: 0px;
+}
+
+.day-time-column-header {
+  display: grid !important;
+  gap: 4px;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  align-content: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 86%, transparent);
+  background: rgba(245, 248, 255, 0.92);
+  box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
+}
+
+.day-time-column-header h3 {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #121826;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.day-time-column-header p {
+  margin: 0;
+  color: #30425f;
+  font-size: 0.72rem;
+}
+
+.day-time-grid {
+  position: relative;
+  display: grid;
+  grid-template-rows: repeat(24, var(--day-row-size));
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
+  background: var(--calendar-cell-bg);
+  min-height: 0;
+  height: 100%;
+}
+
+.day-time-column.is-self .day-time-column-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgb(245, 248, 255);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.day-time-column.is-self .day-time-column-header > * {
+  position: relative;
+  z-index: 1;
+}
+
+.day-time-column.is-self .day-time-grid::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgb(8, 13, 24);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.day-time-column.is-self .day-time-row {
+  position: relative;
+  z-index: 1;
+}
+
+.day-time-column.is-self .day-time-plan-layer {
+  z-index: 2;
+}
+
+.day-time-row {
+  border-top: 1px solid color-mix(in oklab, var(--line) 86%, transparent);
+}
+
+.day-time-row:first-child {
+  border-top: 0;
+
+}
+
+.day-time-plan-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.day-time-plan {
+  position: absolute;
+  pointer-events: none;
+  left: calc(4px + ((100% - 8px) * (var(--lane-index, 0) / var(--lane-count, 1))));
+  width: calc(((100% - 8px) / var(--lane-count, 1)) - 2px);
+  min-height: 22px;
+  border-radius: 7px;
+  border: 1px solid var(--plan-border-color, color-mix(in oklab, var(--plan-color, #20c9a6) 58%, white 10%));
+  background: var(--plan-gradient, color-mix(in oklab, var(--plan-color, #20c9a6) 36%, transparent));
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.22);
+  padding: 4px 6px;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.day-time-plan-main {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  align-content: start;
+  gap: 2px;
+}
+
+.day-time-plan-name {
+  display: block;
+  text-align: center;
+  font-size: 0.74rem;
+  line-height: 1.1;
+  font-weight: 800;
+  color: #e5fdff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.day-time-plan-details {
+  display: grid;
+  gap: 1px;
+}
+
+.day-time-plan-detail {
+  font-size: 0.56rem;
+  line-height: 1.05;
+  color: color-mix(in oklab, #e5fdff 85%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.day-time-plan-icon {
+  font-size: 0.66rem;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+.day-time-column .day-status-pill {
+  font-size: 0.68rem;
+  padding: 4px 8px;
+}
+
 .plan-create-form {
   display: flex;
   flex-direction: column;
@@ -1489,6 +1758,29 @@ body,
 
   .day-columns-pager {
     flex-wrap: wrap;
+  }
+
+  .day-timeline {
+    --day-header-height: 66px;
+    --day-row-size: 20px;
+    --day-self-scale: 1.15;
+    --day-visible-friends: 3;
+    --day-friend-column-min: 66px;
+    --day-friend-column-max: 1000px;
+    --day-friend-column-width: 78px;
+    --day-self-column-width: calc(var(--day-friend-column-width) * var(--day-self-scale));
+    grid-template-columns: 58px 1fr;
+    gap: 0;
+  }
+
+  .day-time-columns-scroll {
+    max-width: 100%;
+  }
+
+
+  .day-time-label {
+    font-size: 0.66rem;
+    padding: 8px 4px 0;
   }
 
   .plan-date-grid {

@@ -111,6 +111,7 @@ type StatusOption = {
 };
 
 const WEEK_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAY_HOURS = Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, "0")}:00`);
 const STORAGE_KEY = "enderfall-calander-data-v1";
 const PLAN_STORAGE_KEY = "enderfall-calander-plans-v1";
 const CLOUD_ROOM_KEY = "enderfall-calander-cloud-room";
@@ -162,6 +163,13 @@ const RECURRENCE_OPTIONS: Array<{ value: RecurrenceType; label: string }> = [
   { value: "monthly", label: "Monthly" },
   { value: "yearly", label: "Yearly" },
   { value: "custom", label: "Custom" },
+];
+const DEV_FAKE_FRIENDS: CloudFriend[] = [
+  { friendship_id: "7b4f9da2-3f4b-4fda-b7fd-5c77e1961a01", user_id: "0f1c22f5-6a9c-4df4-9c5c-6f66c318b101", username: "Ava Test" },
+  { friendship_id: "9a2b5af3-1a65-4f1d-9e2a-dab57dc2f302", user_id: "1e3d4a66-80ce-4db4-8de4-66a7329a2202", username: "Milo Test" },
+  { friendship_id: "3f96d3c8-9f30-49cb-a541-0f8d87f63303", user_id: "2d7a2b9f-0199-4c8f-ae8f-1fc4df7f3303", username: "Nora Test" },
+  { friendship_id: "56c95a7d-6f27-4c0b-9538-b2305d8f6404", user_id: "3c2e7ef7-4f7f-4fbe-9a2c-3a9d39fb4404", username: "Kai Test" },
+  { friendship_id: "aa8a0be4-2e91-4f96-83de-9fe3a8859605", user_id: "4b95ce74-2aab-4a34-85ec-ccdb20d65505", username: "Lena Test" },
 ];
 const themeOptions: { value: ThemeMode; label: string }[] = [
   { value: "system", label: "System (Default)" },
@@ -494,6 +502,44 @@ const plansOverlap = (a: Pick<Plan, "fromDate" | "toDate" | "allDay" | "fromTime
 };
 const formatConflictSummary = (plan: Pick<Plan, "name" | "fromDate" | "toDate" | "allDay" | "fromTime" | "toTime" | "location">) =>
   `${plan.name} (${plan.fromDate}${plan.allDay ? "" : ` ${plan.fromTime}`} -> ${plan.toDate}${plan.allDay ? " All day" : ` ${plan.toTime}`}${plan.location ? ` @ ${plan.location}` : ""})`;
+const getPlanDayWindowMinutes = (plan: Plan, dateKey: string) => {
+  if (!isDateInRange(dateKey, plan.fromDate, plan.toDate)) return null;
+  if (plan.allDay) return { start: 0, end: 24 * 60 };
+  const start = dateKey === plan.fromDate ? timeToMinutes(plan.fromTime) : 0;
+  const end = dateKey === plan.toDate ? timeToMinutes(plan.toTime) : 24 * 60;
+  return { start: Math.max(0, Math.min(start, 24 * 60)), end: Math.max(0, Math.min(Math.max(end, start + 1), 24 * 60)) };
+};
+const buildDayTimelineSegments = (plans: Plan[], dateKey: string) => {
+  const timed = plans
+    .map((plan) => {
+      const window = getPlanDayWindowMinutes(plan, dateKey);
+      if (!window) return null;
+      return { plan, start: window.start, end: window.end };
+    })
+    .filter((entry): entry is { plan: Plan; start: number; end: number } => Boolean(entry))
+    .sort((a, b) => (a.start - b.start) || (a.end - b.end));
+
+  const laneEndByIndex: number[] = [];
+  const laneByPlanId = new Map<string, number>();
+  for (const entry of timed) {
+    let lane = laneEndByIndex.findIndex((value) => value <= entry.start);
+    if (lane === -1) {
+      lane = laneEndByIndex.length;
+      laneEndByIndex.push(entry.end);
+    } else {
+      laneEndByIndex[lane] = entry.end;
+    }
+    laneByPlanId.set(entry.plan.id, lane);
+  }
+  const laneCount = Math.max(1, laneEndByIndex.length);
+  return timed.map((entry) => ({
+    plan: entry.plan,
+    start: entry.start,
+    end: entry.end,
+    lane: laneByPlanId.get(entry.plan.id) ?? 0,
+    laneCount,
+  }));
+};
 const parseKeyDate = (value: string) => {
   const [year, month, day] = value.split("-").map((part) => Number(part));
   return new Date(year, month - 1, day);
@@ -609,7 +655,6 @@ export default function App() {
   const [memberBusy, setMemberBusy] = useState(false);
   const [memberMessage, setMemberMessage] = useState("");
   const [dayModalDate, setDayModalDate] = useState<Date | null>(null);
-  const [friendColumnOffset, setFriendColumnOffset] = useState(0);
   const [plans, setPlans] = useState<Plan[]>(() => {
     try {
       const raw = localStorage.getItem(PLAN_STORAGE_KEY);
@@ -661,12 +706,15 @@ export default function App() {
   const [hiddenFriendIds, setHiddenFriendIds] = useState<string[]>([]);
   const [hiddenGroupIds, setHiddenGroupIds] = useState<string[]>([]);
   const [collapsedPersonIds, setCollapsedPersonIds] = useState<string[]>([]);
+  const [dayTimelineRowSize, setDayTimelineRowSize] = useState(22);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const dayTimelineRef = useRef<HTMLDivElement | null>(null);
 
   const storeRef = useRef(store);
   const remoteApplyRef = useRef(false);
   const pushTimerRef = useRef<number | null>(null);
   const sharedPlanIdsRef = useRef<string[]>([]);
+  const lastSharedSyncSignatureRef = useRef("");
 
   useEffect(() => {
     storeRef.current = store;
@@ -1265,15 +1313,6 @@ export default function App() {
       ),
     [allPlans, isPlanVisibleByGroups, planAppliesToPerson]
   );
-  const getParticipantPlansForDay = useCallback(
-    (dateKey: string, personId: string) =>
-      allPlans.filter(
-        (plan) =>
-          isDateInRange(dateKey, plan.fromDate, plan.toDate) &&
-          (plan.ownerId === personId || plan.invitedIds.includes(personId))
-      ),
-    [allPlans]
-  );
   const getPlanPillStyle = useCallback(
     (plan: Plan, personColor: string): CSSProperties => {
       const firstGroupColor = plan.targetGroupIds
@@ -1347,15 +1386,44 @@ export default function App() {
     [friendPeople, hiddenFriendIds]
   );
 
-  const visibleFriendPeople = useMemo(
-    () => visibleFriendPool.slice(friendColumnOffset, friendColumnOffset + 3),
-    [friendColumnOffset, visibleFriendPool]
-  );
-
   const dayModalLabel = useMemo(
     () => (dayModalDate ? dayModalDate.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : ""),
     [dayModalDate]
   );
+  const dayModalKeyDate = useMemo(() => (dayModalDate ? toKeyDate(dayModalDate) : ""), [dayModalDate]);
+  const dayDetailBasePerson = useMemo(
+    () =>
+      selectedPerson ??
+      store.people.find((person) => person.id === selfPersonId) ??
+      store.people[0] ??
+      null,
+    [selectedPerson, selfPersonId, store.people]
+  );
+  const dayDetailFriendPeople = useMemo(() => {
+    if (!dayModalKeyDate || !dayDetailBasePerson) return [] as Person[];
+    return visibleFriendPool.filter((person) => getPlansForDay(dayModalKeyDate, person.id).length > 0);
+  }, [dayDetailBasePerson, dayModalKeyDate, getPlansForDay, visibleFriendPool]);
+  const dayDetailPeople = useMemo(() => {
+    if (!dayDetailBasePerson) return [] as Person[];
+    return [dayDetailBasePerson, ...dayDetailFriendPeople];
+  }, [dayDetailBasePerson, dayDetailFriendPeople]);
+  useEffect(() => {
+    if (!dayModalDate) return;
+    const node = dayTimelineRef.current;
+    if (!node) return;
+    const updateRowSize = () => {
+      const styles = getComputedStyle(node);
+      const rawHeader = styles.getPropertyValue("--day-header-height").trim();
+      const headerHeight = Number.parseFloat(rawHeader.replace("px", "")) || 74;
+      const available = Math.max(0, node.clientHeight - headerHeight);
+      const next = Math.max(18, available / 24);
+      setDayTimelineRowSize((current) => (Math.abs(current - next) < 0.2 ? current : next));
+    };
+    updateRowSize();
+    const observer = new ResizeObserver(updateRowSize);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [dayDetailPeople.length, dayModalDate]);
 
   const monthLabel = useMemo(
     () => monthAnchor.toLocaleDateString(undefined, { month: "long", year: "numeric" }),
@@ -1412,12 +1480,6 @@ export default function App() {
 
     return layoutByDay;
   }, [allPlans, calendarDays, isPlanVisibleByGroups, planAppliesToPerson, selectedPerson]);
-  useEffect(() => {
-    setFriendColumnOffset((current) =>
-      Math.max(0, Math.min(current, Math.max(0, visibleFriendPool.length - 1)))
-    );
-  }, [visibleFriendPool.length]);
-
   const monthCounts = useMemo(() => {
     const counts = { ...EMPTY_COUNTS };
     if (!selectedPerson) return counts;
@@ -1438,7 +1500,6 @@ export default function App() {
   const openDayModal = (date: Date) => {
     if (!selectedPerson) return;
     setDayModalDate(date);
-    setFriendColumnOffset(0);
   };
 
   const closeDayModal = () => {
@@ -1854,7 +1915,23 @@ export default function App() {
       setCloudFriendsError(error);
       return;
     }
-    setCloudFriends(friends);
+    const nextFriends = import.meta.env.DEV
+      ? [...friends, ...DEV_FAKE_FRIENDS.filter((fake) => !friends.some((real) => real.user_id === fake.user_id))]
+      : friends;
+    setCloudFriends((current) => {
+      if (current.length === nextFriends.length) {
+        const currentKey = [...current]
+          .map((entry) => `${entry.friendship_id}:${entry.user_id}:${entry.username}`)
+          .sort()
+          .join("|");
+        const nextKey = [...nextFriends]
+          .map((entry) => `${entry.friendship_id}:${entry.user_id}:${entry.username}`)
+          .sort()
+          .join("|");
+        if (currentKey === nextKey) return current;
+      }
+      return nextFriends;
+    });
     setCloudFriendsError("");
   }, [socialUserId]);
 
@@ -1998,15 +2075,15 @@ export default function App() {
     const unsubscribe = onCalendarRealtimeChange(socialUserId, () => {
       void refreshSharedPlans();
       void refreshNotifications();
-      void refreshCloudFriends();
       void refreshOwnedPlanInvites();
     });
     return () => unsubscribe();
-  }, [socialUserId, refreshCloudFriends, refreshNotifications, refreshOwnedPlanInvites, refreshSharedPlans]);
+  }, [socialUserId, refreshNotifications, refreshOwnedPlanInvites, refreshSharedPlans]);
 
   useEffect(() => {
     if (!socialUserId || !isCloudConfigured) {
       sharedPlanIdsRef.current = [];
+      lastSharedSyncSignatureRef.current = "";
       return;
     }
     const ownedSharedPlans = plans.filter((plan) => (shareRecipientIdsByPlan.get(plan.id)?.length ?? 0) > 0);
@@ -2021,11 +2098,19 @@ export default function App() {
       all_day: plan.allDay,
       from_time: plan.fromTime,
       to_time: plan.toTime,
-      target_group_ids: encodeSharedTargetGroupIds(plan),
-      invited_ids: (shareRecipientIdsByPlan.get(plan.id) ?? []).filter((id) => id && id !== socialUserId && isUuid(id)),
+      target_group_ids: encodeSharedTargetGroupIds(plan).sort(),
+      invited_ids: (shareRecipientIdsByPlan.get(plan.id) ?? [])
+        .filter((id) => id && id !== socialUserId && isUuid(id))
+        .sort(),
     }));
+    const sortedPayload = [...planPayload].sort((a, b) => a.id.localeCompare(b.id));
+    const syncSignature = JSON.stringify(sortedPayload);
+    if (syncSignature === lastSharedSyncSignatureRef.current) {
+      return;
+    }
+    lastSharedSyncSignatureRef.current = syncSignature;
 
-    void upsertSharedPlans(socialUserId, planPayload);
+    void upsertSharedPlans(socialUserId, sortedPayload);
     ownedSharedPlans.forEach((plan) => {
       const shareRecipients = shareRecipientIdsByPlan.get(plan.id) ?? [];
       void syncSharedPlanInvites(
@@ -2505,102 +2590,89 @@ export default function App() {
           isOpen={Boolean(dayModalDate)}
           title="Day Details"
           subtitle={dayModalLabel}
+          className="day-details-modal"
           size="wide"
           onClose={closeDayModal}
         >
           {dayModalDate ? (
             <>
               <div className="ef-modal-form">
-                <div className="day-columns">
-                {selectedPerson ? (
-                  <Panel variant="card" borderWidth={1} className="day-column prefs-section">
-                    <h3>Your Stuff</h3>
-                    <p>{selectedPerson.name}</p>
-                    {(() => {
-                      const status = getDayStatus(selectedPerson.id, toKeyDate(dayModalDate));
-                      const meta = status !== "none" ? STATUS_LOOKUP[status] : null;
-                      return <span className={`day-status-pill ${meta?.swatchClass ?? "day-status-none"}`}>{meta?.short ?? "No plan"}</span>;
-                    })()}
-                    <div className="day-plan-list">
-                      {getParticipantPlansForDay(toKeyDate(dayModalDate), selectedPerson.id).length > 0 ? (
-                        getParticipantPlansForDay(toKeyDate(dayModalDate), selectedPerson.id).map((plan) => (
-                          <div key={plan.id} className="day-plan-item" style={getPlanPillStyle(plan, selectedPerson.color)}>
-                            <strong>{plan.name}</strong>
-                            <span>{formatPlanWhen(plan)}</span>
-                            <span>{getPlanParticipationStatus(plan, selectedPerson.id)}</span>
-                            {plan.location ? <span>Location: {plan.location}</span> : null}
-                            {plan.summary ? <span>{plan.summary}</span> : null}
-                            <div className="plan-item-actions">
-                              <Button type="button" variant="ghost" className="plan-icon-btn" onClick={() => openEditPlanModal(plan)} title="Edit plan">
-                                <FaEdit />
-                              </Button>
-                              <Button type="button" variant="delete" className="plan-icon-btn" onClick={() => deletePlan(plan.id)} title="Delete plan">
-                                <FaTrashAlt />
-                              </Button>
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <span className="day-plan-empty">No plans on this date.</span>
-                      )}
-                    </div>
-                  </Panel>
-                ) : null}
-
-                  {visibleFriendPeople.map((person) => {
-                    const status = getDayStatus(person.id, toKeyDate(dayModalDate));
-                    const meta = status !== "none" ? STATUS_LOOKUP[status] : null;
-                    return (
-                      <Panel key={person.id} variant="card" borderWidth={1} className="day-column prefs-section">
-                        <h3>{person.name}</h3>
-                        <p>Friend</p>
-                        <span className={`day-status-pill ${meta?.swatchClass ?? "day-status-none"}`}>{meta?.short ?? "No plan"}</span>
-                        <div className="day-plan-list">
-                          {getParticipantPlansForDay(toKeyDate(dayModalDate), person.id).length > 0 ? (
-                            getParticipantPlansForDay(toKeyDate(dayModalDate), person.id).map((plan) => (
-                              <div key={plan.id} className="day-plan-item" style={getPlanPillStyle(plan, person.color)}>
-                                <strong>{plan.name}</strong>
-                                <span>{formatPlanWhen(plan)}</span>
-                                <span>{getPlanParticipationStatus(plan, person.id)}</span>
-                                {plan.location ? <span>Location: {plan.location}</span> : null}
-                                {plan.summary ? <span>{plan.summary}</span> : null}
-                                <div className="plan-item-actions">
-                                  <Button type="button" variant="ghost" className="plan-icon-btn" onClick={() => openEditPlanModal(plan)} title="Edit plan">
-                                    <FaEdit />
-                                  </Button>
-                                  <Button type="button" variant="delete" className="plan-icon-btn" onClick={() => deletePlan(plan.id)} title="Delete plan">
-                                    <FaTrashAlt />
-                                  </Button>
-                                </div>
-                              </div>
-                            ))
-                          ) : (
-                            <span className="day-plan-empty">No plans on this date.</span>
-                          )}
-                        </div>
-                      </Panel>
-                    );
-                  })}
-                </div>
-
-                {visibleFriendPool.length > 3 ? (
-                  <div className="day-columns-pager">
-                    <Button type="button" variant="ghost" onClick={() => setFriendColumnOffset((current) => Math.max(0, current - 1))} disabled={friendColumnOffset === 0}>
-                      Prev Friends
-                    </Button>
-                    <p>
-                      Showing {friendColumnOffset + 1}-{Math.min(friendColumnOffset + 3, visibleFriendPool.length)} of {visibleFriendPool.length}
-                    </p>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      onClick={() => setFriendColumnOffset((current) => (current + 3 >= visibleFriendPool.length ? current : current + 1))}
-                      disabled={friendColumnOffset + 3 >= visibleFriendPool.length}
-                    >
-                      Next Friends
-                    </Button>
+                <div
+                  ref={dayTimelineRef}
+                  className="day-timeline"
+                  style={{ ["--day-row-size" as string]: `${dayTimelineRowSize}px` }}
+                >
+                  <div className="day-time-labels">
+                    <div className="day-time-label-spacer" />
+                    {DAY_HOURS.map((hour) => (
+                      <div key={`day-hour-${hour}`} className="day-time-label">
+                        {hour}
+                      </div>
+                    ))}
                   </div>
-                ) : null}
+                  <div
+                    className="day-time-columns-scroll"
+                    style={{ ["--day-visible-friends" as string]: String(Math.min(3, dayDetailFriendPeople.length)) }}
+                  >
+                    <div className="day-time-columns">
+                      {dayDetailPeople.map((person, index) => {
+                        const isSelfColumn = index === 0;
+                        const dayPlans = getPlansForDay(dayModalKeyDate, person.id);
+                        const segments = buildDayTimelineSegments(dayPlans, dayModalKeyDate);
+                        const status = getDayStatus(person.id, dayModalKeyDate);
+                        const meta = status !== "none" ? STATUS_LOOKUP[status] : null;
+                        return (
+                          <Panel
+                            key={person.id}
+                            variant="card"
+                            borderWidth={1}
+                            className={`day-time-column prefs-section ${isSelfColumn ? "is-self" : ""}`}
+                          >
+                            <div className="day-time-column-header">
+                              <h3>{isSelfColumn ? "You" : person.name}</h3>
+                              <p>{isSelfColumn ? person.name : "Friend"}</p>
+                              <span className={`day-status-pill ${meta?.swatchClass ?? "day-status-none"}`}>{meta?.short ?? "No plan"}</span>
+                            </div>
+                            <div className="day-time-grid">
+                              {DAY_HOURS.map((hour) => (
+                                <div key={`${person.id}-${hour}`} className="day-time-row" />
+                              ))}
+                              <div className="day-time-plan-layer">
+                                {segments.map(({ plan, start, end, lane, laneCount }) => {
+                                  const firstGroupId = plan.targetGroupIds[0];
+                                  const groupIcon = firstGroupId ? store.groups.find((group) => group.id === firstGroupId)?.icon ?? null : null;
+                                  return (
+                                    <div
+                                      key={`${person.id}-${plan.id}-${start}-${lane}`}
+                                      className="day-time-plan"
+                                      style={{
+                                        top: `${(start / (24 * 60)) * 100}%`,
+                                        height: `${Math.max(2, ((end - start) / (24 * 60)) * 100)}%`,
+                                        ["--lane-index" as string]: lane,
+                                        ["--lane-count" as string]: laneCount,
+                                        ...getPlanPillStyle(plan, person.color),
+                                      }}
+                                      title={`${plan.name} - ${getPlanParticipationStatus(plan, person.id)}`}
+                                    >
+                                      <div className="day-time-plan-main">
+                                        <span className="day-time-plan-name">{plan.name}</span>
+                                        <div className="day-time-plan-details">
+                                          {plan.location ? <span className="day-time-plan-detail">📍 {plan.location}</span> : null}
+                                          {plan.summary ? <span className="day-time-plan-detail">{plan.summary}</span> : null}
+                                        </div>
+                                      </div>
+                                      {groupIcon ? <span className="day-time-plan-icon" aria-hidden="true">{groupIcon}</span> : null}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </Panel>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
               </div>
               <div className="ef-modal-actions">
                 <Button variant="primary" type="button" onClick={closeDayModal}>
