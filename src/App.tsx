@@ -6,6 +6,7 @@ import { readSharedPreferences, refreshLaunchToken, writeSharedPreferences, type
 import {
   createCloudRoom,
   getCloudUser,
+  getCloudProfile,
   inviteCloudRoomMember,
   isCloudConfigured,
   joinCloudRoom,
@@ -16,7 +17,10 @@ import {
   listCloudFriends,
   listCloudRoomMembers,
   markNotificationRead,
+  deleteNotification,
+  clearNotificationsByIds,
   onCalendarRealtimeChange,
+  onCloudFriendStatusChange,
   onCloudAuthStateChange,
   respondToPlanInvite,
   readCloudRoom,
@@ -51,7 +55,7 @@ type ThemeMode = "galaxy" | "system" | "light" | "plain-light" | "plain-dark";
 
 type Group = { id: string; name: string; icon: string; color: string };
 type Person = { id: string; name: string; groupIds: string[]; color: string };
-type CloudUser = { id: string; email: string | null };
+type CloudUser = { id: string; email: string | null; avatarUrl?: string | null };
 type Plan = {
   id: string;
   name: string;
@@ -425,6 +429,12 @@ const normalizeInviteStatus = (status: string): "pending" | InviteResponse => {
   return "pending";
 };
 
+const notificationPayloadPlanId = (payload: Record<string, unknown> | null | undefined): string => {
+  if (!payload) return "";
+  const planId = payload.plan_id;
+  return typeof planId === "string" ? planId : "";
+};
+
 const isDateInRange = (dateKey: string, fromDate: string, toDate: string) => {
   const [start, end] = fromDate <= toDate ? [fromDate, toDate] : [toDate, fromDate];
   return dateKey >= start && dateKey <= end;
@@ -475,6 +485,17 @@ const normalizePlans = (value: unknown, groups: Group[], defaultOwnerId: string)
       } satisfies Plan;
     })
     .filter((plan): plan is Plan => Boolean(plan));
+};
+
+const mergeRemoteStorePreservingLocalPersonColors = (localStore: CalendarStore, remoteStore: CalendarStore): CalendarStore => {
+  const localColorByPersonId = new Map(localStore.people.map((person) => [person.id, person.color] as const));
+  return {
+    ...remoteStore,
+    people: remoteStore.people.map((person) => ({
+      ...person,
+      color: localColorByPersonId.get(person.id) ?? person.color,
+    })),
+  };
 };
 
 const shiftKeyDate = (dateKey: string, days: number) => {
@@ -645,6 +666,7 @@ export default function App() {
   );
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
   const [cloudUser, setCloudUser] = useState<CloudUser | null>(null);
+  const [cloudProfileAvatarUrl, setCloudProfileAvatarUrl] = useState<string | null>(null);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
@@ -667,6 +689,7 @@ export default function App() {
   });
   const [createPlanOpen, setCreatePlanOpen] = useState(false);
   const [plansListOpen, setPlansListOpen] = useState(false);
+  const [planDetailsPlanId, setPlanDetailsPlanId] = useState<string | null>(null);
   const [friendsListOpen, setFriendsListOpen] = useState(false);
   const [groupsListOpen, setGroupsListOpen] = useState(false);
   const [personCreatorOpen, setPersonCreatorOpen] = useState(false);
@@ -678,7 +701,9 @@ export default function App() {
   const [friendRequestUsername, setFriendRequestUsername] = useState("");
   const [friendRequestBusy, setFriendRequestBusy] = useState(false);
   const [friendRequestMessage, setFriendRequestMessage] = useState("");
+  const [deleteFriendConfirmOpen, setDeleteFriendConfirmOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationsTab, setNotificationsTab] = useState<"activity" | "invites">("activity");
   const [inviteActionMessage, setInviteActionMessage] = useState("");
   const [cloudNotifications, setCloudNotifications] = useState<CloudNotification[]>([]);
   const [incomingPlanInvites, setIncomingPlanInvites] = useState<SharedInvitePayload[]>([]);
@@ -710,6 +735,7 @@ export default function App() {
   const [dayTimelineRowSize, setDayTimelineRowSize] = useState(22);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const dayTimelineRef = useRef<HTMLDivElement | null>(null);
+  const socialUserId = isUuid(cloudUser?.id) ? (cloudUser?.id ?? null) : null;
 
   const storeRef = useRef(store);
   const remoteApplyRef = useRef(false);
@@ -807,7 +833,7 @@ export default function App() {
       const localUpdatedAt = storeRef.current.updatedAt;
       if (remoteStore.updatedAt > localUpdatedAt) {
         remoteApplyRef.current = true;
-        setStore(remoteStore);
+        setStore((current) => mergeRemoteStorePreservingLocalPersonColors(current, remoteStore));
         setSyncMessage("Pulled latest changes from cloud.");
       } else if (source === "manual") {
         setSyncMessage("Already up to date.");
@@ -855,7 +881,7 @@ export default function App() {
         const remoteStore = normalizeStore(record.payload);
         if (remoteStore && remoteStore.updatedAt > localSnapshot.updatedAt) {
           remoteApplyRef.current = true;
-          setStore(remoteStore);
+          setStore((current) => mergeRemoteStorePreservingLocalPersonColors(current, remoteStore));
           setSyncState("idle");
           setLastSyncAt(Date.now());
           setSyncMessage("Cloud had newer data, so it was pulled instead.");
@@ -1050,14 +1076,14 @@ export default function App() {
       }
       const user = await getCloudUser();
       if (!active) return;
-      setCloudUser(user ? { id: user.id, email: user.email ?? null } : null);
+      setCloudUser(user ? { id: user.id, email: user.email ?? null, avatarUrl: (user.user_metadata as { avatar_url?: string } | undefined)?.avatar_url ?? null } : null);
     };
 
     void resolveUser();
 
     const unsubscribe = onCloudAuthStateChange((user) => {
       if (!active) return;
-      setCloudUser(user ? { id: user.id, email: user.email ?? null } : null);
+      setCloudUser(user ? { id: user.id, email: user.email ?? null, avatarUrl: (user.user_metadata as { avatar_url?: string } | undefined)?.avatar_url ?? null } : null);
     });
 
     return () => {
@@ -1065,6 +1091,21 @@ export default function App() {
       unsubscribe();
     };
   }, [isMobileClient, launchToken]);
+
+  useEffect(() => {
+    if (!socialUserId) {
+      setCloudProfileAvatarUrl(null);
+      return;
+    }
+    let active = true;
+    void getCloudProfile(socialUserId).then(({ profile }) => {
+      if (!active) return;
+      setCloudProfileAvatarUrl(profile?.avatar_url ?? null);
+    });
+    return () => {
+      active = false;
+    };
+  }, [socialUserId]);
 
   useEffect(() => {
     if (!cloudUser) {
@@ -1135,11 +1176,29 @@ export default function App() {
 
   useEffect(() => {
     if (!selfPersonId) return;
-    const cloudFriendIds = new Set(cloudFriends.map((friend) => friend.user_id));
-    updateStore((current) => ({
-      ...current,
-      people: current.people.filter((person) => person.id === selfPersonId || cloudFriendIds.has(person.id)),
-    }));
+    updateStore((current) => {
+      const peopleById = new Map(current.people.map((person) => [person.id, person] as const));
+      let changed = false;
+
+      cloudFriends.forEach((friend, index) => {
+        if (friend.user_id === selfPersonId) return;
+        const existing = peopleById.get(friend.user_id);
+        if (existing) return;
+        changed = true;
+        peopleById.set(friend.user_id, {
+          id: friend.user_id,
+          name: friend.username || "Friend",
+          groupIds: [DEFAULT_GROUP_ID_FRIENDS],
+          color: PRESET_PERSON_COLORS[index % PRESET_PERSON_COLORS.length],
+        });
+      });
+
+      if (!changed) return current;
+      return {
+        ...current,
+        people: [...peopleById.values()],
+      };
+    });
   }, [cloudFriends, selfPersonId]);
 
   useEffect(() => {
@@ -1180,6 +1239,10 @@ export default function App() {
     () => store.people.find((person) => person.id === selectedPersonId) ?? null,
     [selectedPersonId, store.people]
   );
+  const selfPerson = useMemo(
+    () => store.people.find((person) => person.id === selfPersonId) ?? null,
+    [selfPersonId, store.people]
+  );
 
   const selectedGroupName = useMemo(() => {
     if (!selectedPerson) return "";
@@ -1201,6 +1264,7 @@ export default function App() {
               ? localPrefs.groupIds
               : [DEFAULT_GROUP_ID_FRIENDS],
           color: localPrefs?.color ?? PRESET_PERSON_COLORS[index % PRESET_PERSON_COLORS.length],
+          avatarUrl: friend.avatar_url ?? null,
         };
       }),
     [cloudFriends, store.people]
@@ -1208,6 +1272,10 @@ export default function App() {
   const planInvitePeople = useMemo(
     () => cloudFriendPeople.filter((person) => person.id !== selfPersonId),
     [cloudFriendPeople, selfPersonId]
+  );
+  const editingCloudFriend = useMemo(
+    () => cloudFriends.find((friend) => friend.user_id === editingPersonId) ?? null,
+    [cloudFriends, editingPersonId]
   );
   const planSelectedGroupMemberIds = useMemo(() => {
     if (planTargetGroupIds.length === 0) return [] as string[];
@@ -1310,6 +1378,26 @@ export default function App() {
     });
     return [...byId.values()];
   }, [plans, sharedPlans]);
+  const planDetailsPlan = useMemo(
+    () => (planDetailsPlanId ? allPlans.find((plan) => plan.id === planDetailsPlanId) ?? null : null),
+    [allPlans, planDetailsPlanId]
+  );
+  const groupedPlansForList = useMemo(() => {
+    const sorted = [...allPlans].sort((a, b) => {
+      const dateCompare = a.fromDate.localeCompare(b.fromDate);
+      if (dateCompare !== 0) return dateCompare;
+      if (a.allDay !== b.allDay) return a.allDay ? -1 : 1;
+      return a.fromTime.localeCompare(b.fromTime);
+    });
+    const groups = new Map<string, Plan[]>();
+    sorted.forEach((plan) => {
+      const key = plan.fromDate;
+      const list = groups.get(key) ?? [];
+      list.push(plan);
+      groups.set(key, list);
+    });
+    return [...groups.entries()].map(([date, plansForDate]) => ({ date, plans: plansForDate }));
+  }, [allPlans]);
   const visibleGroupIds = useMemo(
     () => store.groups.map((group) => group.id).filter((groupId) => !hiddenGroupIds.includes(groupId)),
     [hiddenGroupIds, store.groups]
@@ -1319,6 +1407,10 @@ export default function App() {
       plan.targetGroupIds.length === 0 ||
       plan.targetGroupIds.some((groupId) => visibleGroupIds.includes(groupId)),
     [visibleGroupIds]
+  );
+  const isPlanVisibleByFriendToggle = useCallback(
+    (plan: Plan) => !hiddenFriendIds.includes(plan.ownerId),
+    [hiddenFriendIds]
   );
   const planAppliesToPerson = useCallback(
     (plan: Plan, personId: string) => {
@@ -1338,9 +1430,10 @@ export default function App() {
         (plan) =>
           isDateInRange(dateKey, plan.fromDate, plan.toDate) &&
           isPlanVisibleByGroups(plan) &&
+          isPlanVisibleByFriendToggle(plan) &&
           planAppliesToPerson(plan, personId)
       ),
-    [allPlans, isPlanVisibleByGroups, planAppliesToPerson]
+    [allPlans, isPlanVisibleByFriendToggle, isPlanVisibleByGroups, planAppliesToPerson]
   );
   const getCalendarCellPlansForDay = useCallback(
     (dateKey: string, personId: string) =>
@@ -1348,9 +1441,10 @@ export default function App() {
         (plan) =>
           isDateInRange(dateKey, plan.fromDate, plan.toDate) &&
           isPlanVisibleByGroups(plan) &&
+          isPlanVisibleByFriendToggle(plan) &&
           (personId === selfPersonId || planAppliesToPerson(plan, personId))
       ),
-    [allPlans, isPlanVisibleByGroups, planAppliesToPerson, selfPersonId]
+    [allPlans, isPlanVisibleByFriendToggle, isPlanVisibleByGroups, planAppliesToPerson, selfPersonId]
   );
   const getPlanPillStyle = useCallback(
     (plan: Plan, personColor: string, participantStripeColors?: string[]): CSSProperties => {
@@ -1362,6 +1456,8 @@ export default function App() {
       const firstInviteStripeColor = inviteStripeColors[0] ?? null;
       const style: CSSProperties = {
         ["--plan-color" as string]: personColor,
+        ["--plan-gradient" as string]: `linear-gradient(120deg, ${personColor} 0 100%)`,
+        ["--plan-border-color" as string]: personColor,
       };
       if (firstGroupColor && inviteStripeColors.length > 0) {
         const stripeStart = 62;
@@ -1371,18 +1467,18 @@ export default function App() {
           .map((color, index) => {
             const start = stripeStart + stripeSize * index;
             const end = stripeStart + stripeSize * (index + 1);
-            return `color-mix(in oklab, ${color} 36%, transparent) ${start}% ${end}%`;
+            return `${color} ${start}% ${end}%`;
           })
           .join(", ");
         style["--plan-gradient" as string] =
-          `linear-gradient(120deg, color-mix(in oklab, ${personColor} 36%, transparent) 0 ${stripeStart}%, ${stripeStops}, color-mix(in oklab, ${firstGroupColor} 36%, transparent) ${stripeEnd}% 100%)`;
+          `linear-gradient(120deg, ${personColor} 0 ${stripeStart}%, ${stripeStops}, ${firstGroupColor} ${stripeEnd}% 100%)`;
         style["--plan-border-color" as string] =
-          `color-mix(in oklab, ${personColor} 65%, ${firstGroupColor} 20%, ${firstInviteStripeColor} 15%)`;
+          `${firstInviteStripeColor ?? firstGroupColor}`;
       } else if (firstGroupColor) {
         style["--plan-gradient" as string] =
-          `linear-gradient(120deg, color-mix(in oklab, ${personColor} 36%, transparent) 0 75%, color-mix(in oklab, ${firstGroupColor} 36%, transparent) 75% 100%)`;
+          `linear-gradient(120deg, ${personColor} 0 75%, ${firstGroupColor} 75% 100%)`;
         style["--plan-border-color" as string] =
-          `color-mix(in oklab, ${personColor} 75%, ${firstGroupColor} 25%)`;
+          `${firstGroupColor}`;
       } else if (inviteStripeColors.length > 0) {
         const stripeStart = 84;
         const stripeEnd = 100;
@@ -1391,13 +1487,13 @@ export default function App() {
           .map((color, index) => {
             const start = stripeStart + stripeSize * index;
             const end = stripeStart + stripeSize * (index + 1);
-            return `color-mix(in oklab, ${color} 36%, transparent) ${start}% ${end}%`;
+            return `${color} ${start}% ${end}%`;
           })
           .join(", ");
         style["--plan-gradient" as string] =
-          `linear-gradient(120deg, color-mix(in oklab, ${personColor} 36%, transparent) 0 ${stripeStart}%, ${stripeStops})`;
+          `linear-gradient(120deg, ${personColor} 0 ${stripeStart}%, ${stripeStops})`;
         style["--plan-border-color" as string] =
-          `color-mix(in oklab, ${personColor} 80%, ${firstInviteStripeColor} 20%)`;
+          `${firstInviteStripeColor ?? personColor}`;
       }
       return style;
     },
@@ -1502,6 +1598,7 @@ export default function App() {
       .filter(
         (plan) =>
           isPlanVisibleByGroups(plan) &&
+          isPlanVisibleByFriendToggle(plan) &&
           (selectedPerson.id === selfPersonId || planAppliesToPerson(plan, selectedPerson.id)) &&
           !(plan.toDate < visibleStart || plan.fromDate > visibleEnd)
       )
@@ -1540,7 +1637,7 @@ export default function App() {
     }
 
     return layoutByDay;
-  }, [allPlans, calendarDays, isPlanVisibleByGroups, planAppliesToPerson, selectedPerson, selfPersonId]);
+  }, [allPlans, calendarDays, isPlanVisibleByFriendToggle, isPlanVisibleByGroups, planAppliesToPerson, selectedPerson, selfPersonId]);
   const monthCounts = useMemo(() => {
     const counts = { ...EMPTY_COUNTS };
     if (!selectedPerson) return counts;
@@ -1787,10 +1884,6 @@ export default function App() {
     return labels.length > 0 ? labels.join(", ") : "Public (All Friends)";
   };
 
-  const invitedNames = (invitedIds: string[]) =>
-    invitedIds
-      .map((id) => store.people.find((person) => person.id === id)?.name)
-      .filter((name): name is string => Boolean(name));
   const getInviteStatusForPerson = useCallback(
     (plan: Plan, personId: string): "pending" | InviteResponse | null => {
       if (plan.ownerId === personId) return "going";
@@ -1813,6 +1906,26 @@ export default function App() {
     if (response === "cant") return "Can't";
     return "Pending";
   };
+  const planDetailsParticipants = useMemo(() => {
+    if (!planDetailsPlan) return [] as Array<{ id: string; name: string; response: "going" | "maybe" | "cant" | "waiting" }>;
+    const ownerName =
+      store.people.find((person) => person.id === planDetailsPlan.ownerId)?.name ??
+      cloudFriendPeople.find((person) => person.id === planDetailsPlan.ownerId)?.name ??
+      (planDetailsPlan.ownerId === selfPersonId ? "You" : "Friend");
+    const inviteeRows = planDetailsPlan.invitedIds.map((inviteeId) => {
+      const name =
+        store.people.find((person) => person.id === inviteeId)?.name ??
+        cloudFriendPeople.find((person) => person.id === inviteeId)?.name ??
+        (inviteeId === selfPersonId ? "You" : "Friend");
+      const status = getInviteStatusForPerson(planDetailsPlan, inviteeId);
+      return {
+        id: inviteeId,
+        name,
+        response: status === "going" || status === "maybe" || status === "cant" ? status : "waiting",
+      };
+    });
+    return [{ id: planDetailsPlan.ownerId, name: ownerName, response: "going" as const }, ...inviteeRows];
+  }, [cloudFriendPeople, getInviteStatusForPerson, planDetailsPlan, selfPersonId, store.people]);
   const getGoingStripeColorsForPlan = useCallback(
     (plan: Plan) => {
       const colors = [...(acceptedInviteeColorByPlan.get(plan.id) ?? [])];
@@ -1953,7 +2066,6 @@ export default function App() {
           )
         : [...current.people, { id, name: trimmed, groupIds: [...newPersonGroupIds], color: newPersonColor }],
     }));
-    setSelectedPersonId(id);
     resetPersonForm();
     setPersonCreatorOpen(false);
   };
@@ -2013,8 +2125,6 @@ export default function App() {
     }));
   };
 
-  const socialUserId = isUuid(cloudUser?.id) ? (cloudUser?.id ?? null) : null;
-
   const refreshCloudFriends = useCallback(async () => {
     if (!socialUserId) {
       setCloudFriends([]);
@@ -2033,11 +2143,11 @@ export default function App() {
     setCloudFriends((current) => {
       if (current.length === nextFriends.length) {
         const currentKey = [...current]
-          .map((entry) => `${entry.friendship_id}:${entry.user_id}:${entry.username}`)
+          .map((entry) => `${entry.friendship_id}:${entry.user_id}:${entry.username}:${entry.avatar_url ?? ""}:${entry.active ? "1" : "0"}`)
           .sort()
           .join("|");
         const nextKey = [...nextFriends]
-          .map((entry) => `${entry.friendship_id}:${entry.user_id}:${entry.username}`)
+          .map((entry) => `${entry.friendship_id}:${entry.user_id}:${entry.username}:${entry.avatar_url ?? ""}:${entry.active ? "1" : "0"}`)
           .sort()
           .join("|");
         if (currentKey === nextKey) return current;
@@ -2140,23 +2250,49 @@ export default function App() {
     setHiddenFriendIds((current) => current.filter((id) => id !== friendUserId));
   };
 
+  const requestDeleteEditingFriend = () => {
+    if (!editingCloudFriend) return;
+    setDeleteFriendConfirmOpen(true);
+  };
+
+  const confirmDeleteEditingFriend = async () => {
+    if (!editingCloudFriend) return;
+    await deleteCloudFriendship(editingCloudFriend.friendship_id, editingCloudFriend.user_id);
+    setDeleteFriendConfirmOpen(false);
+    setPersonCreatorOpen(false);
+    resetPersonForm();
+  };
+
   const handleInviteResponse = async (inviteId: string, response: InviteResponse) => {
     setInviteActionMessage("");
     const invite = incomingPlanInvites.find((entry) => entry.id === inviteId);
     const relatedPlan = invite ? allPlans.find((plan) => plan.id === invite.plan_id) : null;
+    let overlapNotice = "";
     if (relatedPlan && (response === "going" || response === "maybe") && selfPersonId) {
       const conflicts = allPlans
         .filter((plan) => plan.id !== relatedPlan.id)
         .filter((plan) => (plan.ownerId === selfPersonId || plan.invitedIds.includes(selfPersonId)))
         .filter((plan) => plansOverlap(plan, relatedPlan));
       if (conflicts.length > 0) {
-        setInviteActionMessage(`You're busy at that time. Conflicts with: ${conflicts.slice(0, 2).map((plan) => formatConflictSummary(plan)).join(" | ")}`);
-        return;
+        overlapNotice = ` Overlap: ${conflicts.slice(0, 2).map((plan) => formatConflictSummary(plan)).join(" | ")}`;
       }
     }
     const { error } = await respondToPlanInvite(inviteId, response);
     if (error) return;
-    setInviteActionMessage(`Invite updated: ${response === "going" ? "Going" : response === "maybe" ? "Maybe" : "Can't"}.`);
+    if (invite) {
+      const inviteNotificationIds = cloudNotifications
+        .filter((notification) => String(notification.type ?? "").toLowerCase() === "plan_invite")
+        .filter((notification) => notificationPayloadPlanId(notification.payload) === invite.plan_id)
+        .map((notification) => notification.id);
+      if (inviteNotificationIds.length > 0) {
+        await clearNotificationsByIds(inviteNotificationIds);
+        setCloudNotifications((current) =>
+          current.filter((notification) => !inviteNotificationIds.includes(notification.id))
+        );
+      }
+    }
+    setInviteActionMessage(`Invite updated: ${response === "going" ? "Going" : response === "maybe" ? "Maybe" : "Can't"}.${overlapNotice}`);
+    setIncomingPlanInvites((current) => current.filter((inviteRow) => inviteRow.id !== inviteId));
     await refreshNotifications();
     await refreshSharedPlans();
   };
@@ -2169,6 +2305,20 @@ export default function App() {
         notification.id === notificationId ? { ...notification, is_read: true } : notification
       )
     );
+  };
+
+  const deleteActivityNotification = async (notificationId: string) => {
+    const { error } = await deleteNotification(notificationId);
+    if (error) return;
+    setCloudNotifications((current) => current.filter((notification) => notification.id !== notificationId));
+  };
+
+  const clearActivityNotifications = async () => {
+    const ids = activityNotifications.map((notification) => notification.id);
+    if (ids.length === 0) return;
+    const { error } = await clearNotificationsByIds(ids);
+    if (error) return;
+    setCloudNotifications((current) => current.filter((notification) => !ids.includes(notification.id)));
   };
 
   useEffect(() => {
@@ -2201,6 +2351,29 @@ export default function App() {
     }, 5000);
     return () => window.clearInterval(interval);
   }, [socialUserId, refreshNotifications, refreshOwnedPlanInvites, refreshSharedPlans]);
+
+  useEffect(() => {
+    if (!inviteActionMessage) return;
+    const timeout = window.setTimeout(() => setInviteActionMessage(""), 3500);
+    return () => window.clearTimeout(timeout);
+  }, [inviteActionMessage]);
+
+  useEffect(() => {
+    if (!friendRequestMessage) return;
+    const timeout = window.setTimeout(() => setFriendRequestMessage(""), 3500);
+    return () => window.clearTimeout(timeout);
+  }, [friendRequestMessage]);
+
+  useEffect(() => {
+    if (!socialUserId || !isCloudConfigured || cloudFriends.length === 0) return;
+    const unsubscribe = onCloudFriendStatusChange(
+      cloudFriends.map((friend) => friend.user_id).filter(Boolean),
+      () => {
+        void refreshCloudFriends();
+      }
+    );
+    return () => unsubscribe();
+  }, [cloudFriends, refreshCloudFriends, socialUserId]);
 
   useEffect(() => {
     if (!socialUserId || !isCloudConfigured) {
@@ -2484,11 +2657,24 @@ export default function App() {
   const isRoomOwner = currentMember?.role === "owner";
   const authDisplayName = launchToken?.displayName ?? launchToken?.email?.split("@")[0] ?? cloudUser?.email?.split("@")[0] ?? "User";
   const authAvatarFallback = authDisplayName.slice(0, 1).toUpperCase();
+  const authAvatarUrl = launchToken?.avatarUrl ?? cloudProfileAvatarUrl ?? cloudUser?.avatarUrl ?? null;
   const unreadNotificationCount = useMemo(
     () =>
       cloudNotifications.filter((notification) => !notification.is_read).length +
-      incomingPlanInvites.filter((invite) => invite.status === "pending").length,
+      incomingPlanInvites.filter((invite) => normalizeInviteStatus(invite.status) === "pending").length,
     [cloudNotifications, incomingPlanInvites]
+  );
+  const pendingIncomingPlanInvites = useMemo(
+    () => incomingPlanInvites.filter((invite) => normalizeInviteStatus(invite.status) === "pending"),
+    [incomingPlanInvites]
+  );
+  const activityNotifications = useMemo(
+    () =>
+      cloudNotifications.filter((notification) => {
+        const type = String(notification.type ?? "").toLowerCase();
+        return type !== "plan_invite";
+      }),
+    [cloudNotifications]
   );
   const headerMenus = [
     {
@@ -2581,6 +2767,7 @@ export default function App() {
                 <Dropdown
                   variant="user"
                   name={authDisplayName}
+                  avatarUrl={authAvatarUrl}
                   avatarFallback={authAvatarFallback}
                   items={[
                     { label: "Account", onClick: () => setAuthModalOpen(true) },
@@ -2600,6 +2787,20 @@ export default function App() {
           <article className="secondary-toolbar-column">
             <h3>Friends</h3>
             <div className="secondary-pill-list">
+              {selfPerson ? (
+                <button
+                  key={`friend-visibility-self-${selfPerson.id}`}
+                  type="button"
+                  className={`secondary-pill is-person ${!hiddenFriendIds.includes(selfPerson.id) ? "is-active" : "is-hidden"}`}
+                  style={{ ["--plan-color" as string]: selfPerson.color }}
+                  onClick={() => toggleFriendVisibility(selfPerson.id)}
+                >
+                  <span className="pill-icon-badge user-pill-avatar" aria-hidden="true">
+                    {authAvatarUrl ? <img src={authAvatarUrl} alt={selfPerson.name} loading="eager" referrerPolicy="no-referrer" crossOrigin="anonymous" /> : selfPerson.name.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span>{selfPerson.name}</span>
+                </button>
+              ) : null}
               {friendPeople.map((person) => {
                 const isVisible = !hiddenFriendIds.includes(person.id);
                 return (
@@ -2611,7 +2812,7 @@ export default function App() {
                     onClick={() => toggleFriendVisibility(person.id)}
                   >
                     <span className="pill-icon-badge user-pill-avatar" aria-hidden="true">
-                      {person.name.slice(0, 1).toUpperCase()}
+                      {person.avatarUrl ? <img src={person.avatarUrl} alt={person.name} loading="eager" referrerPolicy="no-referrer" crossOrigin="anonymous" /> : person.name.slice(0, 1).toUpperCase()}
                     </span>
                     <span>{person.name}</span>
                   </button>
@@ -2787,7 +2988,14 @@ export default function App() {
                             style={{ ["--plan-color" as string]: person.color }}
                           >
                             <div className="day-time-column-header">
-                              <h3>{isSelfColumn ? "You" : person.name}</h3>
+                              <h3 className="day-person-heading">
+                                <span className="pill-icon-badge user-pill-avatar" aria-hidden="true">
+                                  {isSelfColumn
+                                    ? (authAvatarUrl ? <img src={authAvatarUrl} alt="You" loading="eager" referrerPolicy="no-referrer" crossOrigin="anonymous" /> : "Y")
+                                    : (person.avatarUrl ? <img src={person.avatarUrl} alt={person.name} loading="eager" referrerPolicy="no-referrer" crossOrigin="anonymous" /> : person.name.slice(0, 1).toUpperCase())}
+                                </span>
+                                {isSelfColumn ? "You" : person.name}
+                              </h3>
                               <p>{isSelfColumn ? person.name : "Friend"}</p>
                             </div>
                             <div className="day-time-grid">
@@ -3006,6 +3214,15 @@ export default function App() {
                 </div>
               </div>
               <div className="ef-modal-actions">
+                {editingCloudFriend ? (
+                  <Button
+                    type="button"
+                    variant="delete"
+                    onClick={requestDeleteEditingFriend}
+                  >
+                    Delete Friend
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   variant="ghost"
@@ -3021,6 +3238,27 @@ export default function App() {
                 </Button>
               </div>
             </form>
+          </div>
+        </Modal>
+        <Modal
+          isOpen={deleteFriendConfirmOpen}
+          title="Remove Friend"
+          subtitle="This will remove the friendship and local friend settings."
+          size="compact"
+          onClose={() => setDeleteFriendConfirmOpen(false)}
+        >
+          <div className="ef-modal-form">
+            <p className="cloud-meta">
+              Are you sure you want to remove {editingCloudFriend?.username ?? "this friend"}?
+            </p>
+            <div className="ef-modal-actions">
+              <Button type="button" variant="ghost" onClick={() => setDeleteFriendConfirmOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="button" variant="delete" onClick={() => void confirmDeleteEditingFriend()}>
+                Delete
+              </Button>
+            </div>
           </div>
         </Modal>
         <Modal isOpen={createPlanOpen} title={editingPlanId ? "Edit Plan" : "Create Plan"} subtitle="Set time range and invite people" size="wide" onClose={() => setCreatePlanOpen(false)}>
@@ -3320,246 +3558,592 @@ export default function App() {
             label="Hide non-month days"
           />
         </PreferencesModal>
-        <Modal isOpen={plansListOpen} title="All Plans" subtitle="List view" size="wide" onClose={() => setPlansListOpen(false)}>
-          <div className="ef-modal-form">
-            <div className="plans-list">
-              {allPlans.length > 0 ? (
-                allPlans.map((plan) => {
-                  const invited = invitedNames(plan.invitedIds);
-                  const viewerInvite = incomingInviteByPlanId.get(plan.id);
-                  const viewerInviteStatus = viewerInvite ? normalizeInviteStatus(viewerInvite.status) : null;
-                  const canEditCurrentPlan = canEditPlan(plan);
-                  return (
-                    <Panel key={plan.id} variant="card" borderWidth={1} className="plan-list-item prefs-section">
-                      <h3>{plan.name}</h3>
-                      <p>
-                        {plan.fromDate} to {plan.toDate}
-                        {plan.allDay ? " (All day)" : `, ${plan.fromTime} to ${plan.toTime}`}
-                      </p>
-                      {plan.location ? <p>Location: {plan.location}</p> : null}
-                      {plan.summary ? <p>Summary: {plan.summary}</p> : null}
-                      <p>Visibility: {planTargetLabel(plan.targetGroupIds, plan.isPrivate)}</p>
-                      <p>Invited: {invited.length > 0 ? invited.join(", ") : "No invites"}</p>
-                      {viewerInviteStatus ? (
-                        <p>
-                          Your response: {viewerInviteStatus === "going"
-                            ? "Going"
-                            : viewerInviteStatus === "maybe"
-                              ? "Maybe"
-                              : viewerInviteStatus === "cant"
-                                ? "Can't"
-                                : "Pending"}
-                        </p>
-                      ) : null}
-                      {viewerInvite ? (
-                        <div className="plan-item-actions">
-                          <Button
-                            type="button"
-                            variant={viewerInviteStatus === "going" ? "primary" : "ghost"}
-                            onClick={() => void handleInviteResponse(viewerInvite.id, "going")}
-                          >
-                            Going
-                          </Button>
-                          <Button
-                            type="button"
-                            variant={viewerInviteStatus === "maybe" ? "primary" : "ghost"}
-                            onClick={() => void handleInviteResponse(viewerInvite.id, "maybe")}
-                          >
-                            Maybe
-                          </Button>
-                          <Button
-                            type="button"
-                            variant={viewerInviteStatus === "cant" ? "delete" : "ghost"}
-                            onClick={() => void handleInviteResponse(viewerInvite.id, "cant")}
-                          >
-                            Can't
-                          </Button>
-                        </div>
-                      ) : null}
-                      <div className="plan-item-actions">
-                        {canEditCurrentPlan ? (
-                          <Button type="button" variant="ghost" className="plan-icon-btn" onClick={() => openEditPlanModal(plan)} title="Edit plan">
-                            <FaEdit />
-                          </Button>
-                        ) : null}
-                        {plan.ownerId === selfPersonId ? (
-                          <Button type="button" variant="delete" className="plan-icon-btn" onClick={() => deletePlan(plan.id)} title="Delete plan">
-                            <FaTrashAlt />
-                          </Button>
-                        ) : null}
+        <Modal
+          isOpen={plansListOpen}
+          title="All Plans"
+          subtitle="List view"
+          size="wide"
+          onClose={() => setPlansListOpen(false)}
+          actions={
+            <Button variant="primary" type="button" onClick={() => setPlansListOpen(false)}>
+              Close
+            </Button>
+          }
+        >
+          <div className="ef-modal-form manager-modal">
+            <div className="notifications-summary-grid">
+              <Panel variant="card" borderWidth={1} className="notifications-summary-card">
+                <span className="notifications-summary-label">Total Plans</span>
+                <strong>{allPlans.length}</strong>
+              </Panel>
+              <Panel variant="card" borderWidth={1} className="notifications-summary-card">
+                <span className="notifications-summary-label">Editable Plans</span>
+                <strong>{allPlans.filter((plan) => canEditPlan(plan)).length}</strong>
+              </Panel>
+            </div>
+            <Panel variant="card" borderWidth={1} className="notifications-section manager-section">
+              <div className="notifications-section-header manager-header">
+                <h3>Plans</h3>
+                <span className="notifications-count">{allPlans.length}</span>
+              </div>
+              <div className="notifications-list manager-list">
+                {groupedPlansForList.length > 0 ? (
+                  groupedPlansForList.map(({ date, plans }) => (
+                    <div key={`plan-group-${date}`} className="plan-date-group">
+                      <div className="plan-date-divider"><span>{date}</span></div>
+                      <div className="plan-date-group-list">
+                        {plans.map((plan) => {
+                          const viewerInvite = incomingInviteByPlanId.get(plan.id);
+                          const viewerInviteStatus = viewerInvite ? normalizeInviteStatus(viewerInvite.status) : null;
+                          const planOwnerColor = personColorById.get(plan.ownerId) ?? "#20c9a6";
+                          const participantStripeColors = getGoingStripeColorsForPlan(plan);
+                          const ownerCloudPerson = cloudFriendPeople.find((person) => person.id === plan.ownerId);
+                          const ownerLocalPerson = store.people.find((person) => person.id === plan.ownerId);
+                          const isSelfOwner = plan.ownerId === selfPersonId;
+                          const ownerName = isSelfOwner ? "You" : ownerLocalPerson?.name ?? ownerCloudPerson?.name ?? "Friend";
+                          const ownerAvatar = isSelfOwner ? authAvatarUrl : ownerCloudPerson?.avatarUrl ?? null;
+                          return (
+                            <Panel
+                              key={plan.id}
+                              variant="card"
+                              borderWidth={1}
+                              className="notification-card manager-card prefs-section plan-list-clickable plan-list-pill-card"
+                              style={{
+                                ...getPlanPillStyle(plan, planOwnerColor, participantStripeColors),
+                              }}
+                              onClick={() => setPlanDetailsPlanId(plan.id)}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault();
+                                  setPlanDetailsPlanId(plan.id);
+                                }
+                              }}
+                            >
+                              <div className="notification-card-head">
+                                <span className="notification-owner-inline">
+                                  <span className="pill-icon-badge user-pill-avatar manager-card-avatar" aria-hidden="true">
+                                    {ownerAvatar ? (
+                                      <img src={ownerAvatar} alt={ownerName} loading="eager" referrerPolicy="no-referrer" crossOrigin="anonymous" />
+                                    ) : (
+                                      ownerName.slice(0, 1).toUpperCase()
+                                    )}
+                                  </span>
+                                  <span className="notification-owner-name">{ownerName}</span>
+                                </span>
+                                <h4>{plan.name}</h4>
+                                <span className={`notification-chip ${
+                                  viewerInviteStatus
+                                    ? `status-${viewerInviteStatus}`
+                                    : plan.ownerId === selfPersonId
+                                      ? "status-going"
+                                      : "status-read"
+                                }`}>
+                                  {viewerInviteStatus
+                                    ? viewerInviteStatus === "going"
+                                      ? "Going"
+                                      : viewerInviteStatus === "maybe"
+                                        ? "Maybe"
+                                        : viewerInviteStatus === "cant"
+                                          ? "Can't"
+                                          : "Pending"
+                                    : plan.ownerId === selfPersonId
+                                      ? "Owner"
+                                      : "Shared"}
+                                </span>
+                              </div>
+                              {viewerInvite ? (
+                                <div
+                                  className="notification-actions"
+                                  onClick={(event) => event.stopPropagation()}
+                                  onMouseDown={(event) => event.stopPropagation()}
+                                >
+                                  <Button
+                                    type="button"
+                                    variant="success"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void handleInviteResponse(viewerInvite.id, "going");
+                                    }}
+                                  >
+                                    Going
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="info"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void handleInviteResponse(viewerInvite.id, "maybe");
+                                    }}
+                                  >
+                                    Maybe
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="delete"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void handleInviteResponse(viewerInvite.id, "cant");
+                                    }}
+                                  >
+                                    Can't
+                                  </Button>
+                                </div>
+                              ) : null}
+                            </Panel>
+                          );
+                        })}
                       </div>
-                    </Panel>
-                  );
-                })
-              ) : (
-                <p className="cloud-meta">No plans created yet.</p>
-              )}
-            </div>
-            <div className="ef-modal-actions">
-              <Button variant="primary" type="button" onClick={() => setPlansListOpen(false)}>
-                Close
-              </Button>
-            </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="cloud-meta">No plans created yet.</p>
+                )}
+              </div>
+            </Panel>
           </div>
         </Modal>
-        <Modal isOpen={friendsListOpen} title="Friends" subtitle="Manage people" size="wide" onClose={() => setFriendsListOpen(false)}>
-          <div className="ef-modal-form">
-            <div className="manager-header">
-              <h3>Friends</h3>
-              {socialUserId ? (
-                <>
-                  <Button type="button" variant="primary" onClick={openFriendRequestModal}>
-                    New Friend
-                  </Button>
-                  <Button type="button" variant="ghost" onClick={() => void refreshCloudFriends()}>
-                    Refresh
-                  </Button>
-                </>
-              ) : (
-                <p className="cloud-meta">Sign in to manage friends.</p>
-              )}
+        <Modal
+          isOpen={Boolean(planDetailsPlan)}
+          title={planDetailsPlan?.name ?? "Plan Details"}
+          subtitle="Plan details and participant responses"
+          size="wide"
+          onClose={() => setPlanDetailsPlanId(null)}
+          headerActions={
+            planDetailsPlan && canEditPlan(planDetailsPlan) ? (
+              <>
+                <button
+                  type="button"
+                  className="icon-action small ef-modal-head-action is-info"
+                  onClick={() => {
+                    const planToEdit = planDetailsPlan;
+                    setPlansListOpen(false);
+                    setPlanDetailsPlanId(null);
+                    window.setTimeout(() => {
+                      openEditPlanModal(planToEdit);
+                    }, 0);
+                  }}
+                  title="Edit plan"
+                  aria-label="Edit plan"
+                >
+                  <FaEdit />
+                </button>
+                {planDetailsPlan.ownerId === selfPersonId ? (
+                  <button
+                    type="button"
+                    className="icon-action small ef-modal-head-action is-delete"
+                    onClick={() => {
+                      const planIdToDelete = planDetailsPlan.id;
+                      setPlansListOpen(false);
+                      setPlanDetailsPlanId(null);
+                      window.setTimeout(() => deletePlan(planIdToDelete), 0);
+                    }}
+                    title="Delete plan"
+                    aria-label="Delete plan"
+                  >
+                    <FaTrashAlt />
+                  </button>
+                ) : null}
+              </>
+            ) : null
+          }
+          actions={
+            <Button variant="primary" type="button" onClick={() => setPlanDetailsPlanId(null)}>
+              Close
+            </Button>
+          }
+        >
+          {planDetailsPlan ? (
+            <div className="ef-modal-form manager-modal">
+              <Panel variant="card" borderWidth={1} className="notifications-section manager-section">
+                <div className="notifications-section-header manager-header">
+                  <h3>Details</h3>
+                </div>
+                <p className="notification-card-meta">
+                  {planDetailsPlan.fromDate} to {planDetailsPlan.toDate}
+                  {planDetailsPlan.allDay ? " (All day)" : ` | ${planDetailsPlan.fromTime} to ${planDetailsPlan.toTime}`}
+                </p>
+                {planDetailsPlan.location ? <p className="notification-card-meta">Location: {planDetailsPlan.location}</p> : null}
+                {planDetailsPlan.summary ? <p className="notification-card-meta">Summary: {planDetailsPlan.summary}</p> : null}
+                <p className="notification-card-meta">Visibility: {planTargetLabel(planDetailsPlan.targetGroupIds, planDetailsPlan.isPrivate)}</p>
+              </Panel>
+              <Panel variant="card" borderWidth={1} className="notifications-section manager-section">
+                <div className="notifications-section-header manager-header">
+                  <h3>Participants</h3>
+                  <span className="notifications-count">{planDetailsParticipants.length}</span>
+                </div>
+                <div className="notifications-list manager-list">
+                  {planDetailsParticipants.map((participant) => {
+                    const participantFriend = cloudFriendPeople.find((friend) => friend.id === participant.id);
+                    const participantAvatar = participant.id === selfPersonId
+                      ? authAvatarUrl
+                      : participantFriend?.avatarUrl ?? null;
+                    const participantColor = personColorById.get(participant.id) ?? "#20c9a6";
+                    return (
+                      <div
+                        key={`${planDetailsPlan.id}-${participant.id}`}
+                        className="manager-card-button plan-participant-row"
+                        style={{ ["--plan-color" as string]: participantColor }}
+                      >
+                        <span className="pill-icon-badge user-pill-avatar manager-card-avatar" aria-hidden="true">
+                          {participantAvatar ? (
+                            <img src={participantAvatar} alt={participant.name} loading="lazy" referrerPolicy="no-referrer" crossOrigin="anonymous" />
+                          ) : (
+                            participant.name.slice(0, 1).toUpperCase()
+                          )}
+                        </span>
+                        <span className="manager-card-name">{participant.name}</span>
+                        <span className={`manager-card-meta ${
+                          participant.response === "going"
+                            ? "status-text-going"
+                            : participant.response === "maybe"
+                              ? "status-text-maybe"
+                              : participant.response === "cant"
+                                ? "status-text-cant"
+                                : "status-text-pending"
+                        }`}>
+                          {participant.response === "going"
+                            ? "Going"
+                            : participant.response === "maybe"
+                              ? "Maybe"
+                              : participant.response === "cant"
+                                ? "Can't"
+                                : "Waiting for response"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {(() => {
+                  const viewerInvite = incomingInviteByPlanId.get(planDetailsPlan.id);
+                  return viewerInvite ? (
+                    <div className="notification-actions">
+                      <Button type="button" variant="success" onClick={() => void handleInviteResponse(viewerInvite.id, "going")}>
+                        Going
+                      </Button>
+                      <Button type="button" variant="info" onClick={() => void handleInviteResponse(viewerInvite.id, "maybe")}>
+                        Maybe
+                      </Button>
+                      <Button type="button" variant="delete" onClick={() => void handleInviteResponse(viewerInvite.id, "cant")}>
+                        Can't
+                      </Button>
+                    </div>
+                  ) : null;
+                })()}
+              </Panel>
             </div>
-            {cloudFriendsError ? <p className="cloud-status is-error">Friends load failed: {cloudFriendsError}</p> : null}
-            <div className="plans-list">
-              {cloudFriends.length > 0 ? (
-                cloudFriends.map((person) => (
-                  <Panel key={person.friendship_id} variant="card" borderWidth={1} className="plan-list-item prefs-section">
-                    <h3>{person.username}</h3>
-                    <p>Connected friend</p>
-                    <div className="plan-item-actions">
+          ) : null}
+        </Modal>
+        <Modal
+          isOpen={friendsListOpen}
+          title="Friends"
+          subtitle="Manage people"
+          size="wide"
+          onClose={() => setFriendsListOpen(false)}
+          actions={
+            <Button variant="primary" type="button" onClick={() => setFriendsListOpen(false)}>
+              Close
+            </Button>
+          }
+        >
+          <div className="ef-modal-form manager-modal">
+            <div className="notifications-summary-grid">
+              <Panel variant="card" borderWidth={1} className="notifications-summary-card">
+                <span className="notifications-summary-label">Connected Friends</span>
+                <strong>{cloudFriends.length}</strong>
+              </Panel>
+              <Panel variant="card" borderWidth={1} className="notifications-summary-card">
+                <span className="notifications-summary-label">Active Friends</span>
+                <strong>{cloudFriends.filter((friend) => friend.active).length}</strong>
+              </Panel>
+            </div>
+            <Panel variant="card" borderWidth={1} className="notifications-section manager-section">
+              <div className="notifications-section-header manager-header">
+                <h3>Friends</h3>
+                {socialUserId ? (
+                  <div className="manager-actions">
+                    <Button type="button" variant="primary" onClick={openFriendRequestModal}>
+                      New Friend
+                    </Button>
+                    <Button type="button" variant="ghost" onClick={() => void refreshCloudFriends()}>
+                      Refresh
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="cloud-meta">Sign in to manage friends.</p>
+                )}
+              </div>
+              {cloudFriendsError ? <p className="cloud-status is-error notifications-toast">Friends load failed: {cloudFriendsError}</p> : null}
+              <div className="notifications-list manager-list">
+                {cloudFriends.length > 0 ? (
+                  cloudFriends.map((person) => {
+                    const merged = cloudFriendPeople.find((entry) => entry.id === person.user_id);
+                    const displayName = merged?.name ?? person.username;
+                    const avatarUrl = merged?.avatarUrl ?? person.avatar_url ?? null;
+                    const accentColor = merged?.color ?? PRESET_PERSON_COLORS[0];
+                    return (
                       <Button
+                        key={person.friendship_id}
                         type="button"
                         variant="ghost"
-                        className="plan-icon-btn"
+                        className="manager-card-button"
+                        style={{ ["--plan-color" as string]: accentColor }}
                         onClick={() => {
-                          const merged = cloudFriendPeople.find((entry) => entry.id === person.user_id);
                           if (merged) openEditPersonCreator(merged);
                         }}
                         title="Edit friend settings"
                       >
-                        <FaEdit />
+                        <span className="pill-icon-badge user-pill-avatar manager-card-avatar" aria-hidden="true">
+                          {avatarUrl ? (
+                            <img src={avatarUrl} alt={displayName} loading="lazy" referrerPolicy="no-referrer" crossOrigin="anonymous" />
+                          ) : (
+                            displayName.slice(0, 1).toUpperCase()
+                          )}
+                        </span>
+                        <span className="manager-card-name">{displayName}</span>
+                        <span className="manager-card-meta">{person.active ? "Active" : "Offline"}</span>
                       </Button>
-                      <Button
-                        type="button"
-                        variant="delete"
-                        className="plan-icon-btn"
-                        onClick={() =>
-                          void deleteCloudFriendship(person.friendship_id, person.user_id)
-                        }
-                        title="Delete friend"
-                      >
-                        <FaTrashAlt />
-                      </Button>
-                    </div>
-                  </Panel>
-                ))
-              ) : (
-                <p className="cloud-meta">
-                  {cloudUser
-                    ? "No friends yet."
-                    : launchToken
-                      ? "Hub connected. Open Account and sign in once to load Supabase friends."
-                      : "Sign in to load friends."}
-                </p>
-              )}
-            </div>
-            <div className="ef-modal-actions">
-              <Button variant="primary" type="button" onClick={() => setFriendsListOpen(false)}>
-                Close
-              </Button>
-            </div>
+                    );
+                  })
+                ) : (
+                  <p className="cloud-meta">
+                    {cloudUser
+                      ? "No friends yet."
+                      : launchToken
+                        ? "Hub connected. Open Account and sign in once to load Supabase friends."
+                        : "Sign in to load friends."}
+                  </p>
+                )}
+              </div>
+            </Panel>
           </div>
         </Modal>
-        <Modal isOpen={groupsListOpen} title="Groups" subtitle="Manage groups" size="wide" onClose={() => setGroupsListOpen(false)}>
-          <div className="ef-modal-form">
-            <div className="manager-header">
-              <h3>Groups</h3>
-              <Button type="button" variant="primary" onClick={openGroupCreator}>
-                New Group
-              </Button>
+        <Modal
+          isOpen={groupsListOpen}
+          title="Groups"
+          subtitle="Manage groups"
+          size="wide"
+          onClose={() => setGroupsListOpen(false)}
+          actions={
+            <Button variant="primary" type="button" onClick={() => setGroupsListOpen(false)}>
+              Close
+            </Button>
+          }
+        >
+          <div className="ef-modal-form manager-modal">
+            <div className="notifications-summary-grid">
+              <Panel variant="card" borderWidth={1} className="notifications-summary-card">
+                <span className="notifications-summary-label">Total Groups</span>
+                <strong>{store.groups.length}</strong>
+              </Panel>
+              <Panel variant="card" borderWidth={1} className="notifications-summary-card">
+                <span className="notifications-summary-label">Total Memberships</span>
+                <strong>{store.people.filter((person) => person.id !== selfPersonId).reduce((total, person) => total + person.groupIds.length, 0)}</strong>
+              </Panel>
             </div>
-            <div className="plans-list">
-              {store.groups.length > 0 ? (
-                store.groups.map((group) => (
-                  <Panel key={group.id} variant="card" borderWidth={1} className="plan-list-item prefs-section">
-                    <h3>{group.icon} {group.name}</h3>
-                    <p>Members: {store.people.filter((person) => person.groupIds.includes(group.id)).length}</p>
-                    <div className="plan-item-actions">
-                      <Button type="button" variant="ghost" className="plan-icon-btn" onClick={() => openEditGroupCreator(group)} title="Edit group">
-                        <FaEdit />
-                      </Button>
-                      <Button type="button" variant="delete" className="plan-icon-btn" onClick={() => deleteGroup(group.id)} title="Delete group">
-                        <FaTrashAlt />
-                      </Button>
-                    </div>
-                  </Panel>
-                ))
-              ) : (
-                <p className="cloud-meta">No groups yet.</p>
-              )}
-            </div>
-            <div className="ef-modal-actions">
-              <Button variant="primary" type="button" onClick={() => setGroupsListOpen(false)}>
-                Close
-              </Button>
-            </div>
+            <Panel variant="card" borderWidth={1} className="notifications-section manager-section">
+              <div className="notifications-section-header manager-header">
+                <h3>Groups</h3>
+                <div className="manager-actions">
+                  <Button type="button" variant="primary" onClick={openGroupCreator}>
+                    New Group
+                  </Button>
+                </div>
+              </div>
+              <div className="notifications-list manager-list">
+                {store.groups.length > 0 ? (
+                  store.groups.map((group) => (
+                    <Button
+                      key={group.id}
+                      type="button"
+                      variant="ghost"
+                      className="manager-card-button manager-group-button"
+                      style={{ ["--plan-color" as string]: group.color }}
+                      onClick={() => openEditGroupCreator(group)}
+                      title="Edit group"
+                    >
+                      <span className="pill-icon-badge manager-group-icon" aria-hidden="true">
+                        {group.icon}
+                      </span>
+                      <span className="manager-card-name">{group.name}</span>
+                      <span className="manager-card-meta">
+                        {store.people.filter((person) => person.id !== selfPersonId && person.groupIds.includes(group.id)).length}
+                      </span>
+                    </Button>
+                  ))
+                ) : (
+                  <p className="cloud-meta">No groups yet.</p>
+                )}
+              </div>
+            </Panel>
           </div>
         </Modal>
-        <Modal isOpen={notificationsOpen} title="Notifications" subtitle="Invites and activity" size="wide" onClose={() => setNotificationsOpen(false)}>
-          <div className="ef-modal-form">
-            {inviteActionMessage ? <p className="cloud-status">{inviteActionMessage}</p> : null}
-            <div className="plans-list">
-              {incomingPlanInvites.length > 0 ? (
-                incomingPlanInvites.map((invite) => {
-                  const relatedPlan = allPlans.find((plan) => plan.id === invite.plan_id);
-                  const inviteStatus = normalizeInviteStatus(invite.status);
-                  return (
-                    <Panel key={invite.id} variant="card" borderWidth={1} className="plan-list-item prefs-section">
-                      <h3>Plan Invite</h3>
-                      <p>{relatedPlan ? relatedPlan.name : invite.plan_id}</p>
-                      <p>Status: {inviteStatus === "going" ? "Going" : inviteStatus === "maybe" ? "Maybe" : inviteStatus === "cant" ? "Can't" : "Pending"}</p>
-                      {inviteStatus === "pending" ? (
-                        <div className="plan-item-actions">
-                          <Button type="button" variant="primary" onClick={() => void handleInviteResponse(invite.id, "going")}>
-                            Going
-                          </Button>
-                          <Button type="button" variant="ghost" onClick={() => void handleInviteResponse(invite.id, "maybe")}>
-                            Maybe
-                          </Button>
-                          <Button type="button" variant="delete" onClick={() => void handleInviteResponse(invite.id, "cant")}>
-                            Can't
+        <Modal
+          isOpen={notificationsOpen}
+          title="Notifications"
+          subtitle="Invites and activity"
+          size="wide"
+          onClose={() => setNotificationsOpen(false)}
+          actions={
+            <Button variant="primary" type="button" onClick={() => setNotificationsOpen(false)}>
+              Close
+            </Button>
+          }
+        >
+          <div className="ef-modal-form notifications-modal">
+            {inviteActionMessage ? <p className="cloud-status notifications-toast">{inviteActionMessage}</p> : null}
+            <div className="notifications-summary-grid">
+              <Panel variant="card" borderWidth={1} className="notifications-summary-card">
+                <span className="notifications-summary-label">Pending Invites</span>
+                <strong>{pendingIncomingPlanInvites.length}</strong>
+              </Panel>
+              <Panel variant="card" borderWidth={1} className="notifications-summary-card">
+                <span className="notifications-summary-label">Unread Activity</span>
+                <strong>{activityNotifications.filter((notification) => !notification.is_read).length}</strong>
+              </Panel>
+            </div>
+            <div className="notifications-tabs" role="tablist" aria-label="Notifications tabs">
+              <Button
+                type="button"
+                variant={notificationsTab === "activity" ? "primary" : "ghost"}
+                className="notifications-tab-btn"
+                onClick={() => setNotificationsTab("activity")}
+              >
+                Activity
+              </Button>
+              <Button
+                type="button"
+                variant={notificationsTab === "invites" ? "primary" : "ghost"}
+                className="notifications-tab-btn"
+                onClick={() => setNotificationsTab("invites")}
+              >
+                Plan Invites
+              </Button>
+            </div>
+            <div className="notifications-sections">
+              {notificationsTab === "invites" ? (
+              <Panel variant="card" borderWidth={1} className="notifications-section">
+                <div className="notifications-section-header">
+                  <h3>Plan Invites</h3>
+                  <span className="notifications-count">{pendingIncomingPlanInvites.length}</span>
+                </div>
+                <div className="notifications-list">
+                  {pendingIncomingPlanInvites.length > 0 ? (
+                    pendingIncomingPlanInvites.map((invite) => {
+                      const relatedPlan = allPlans.find((plan) => plan.id === invite.plan_id);
+                      const inviteStatus = normalizeInviteStatus(invite.status);
+                      const inviteStatusLabel = inviteStatus === "going"
+                        ? "Going"
+                        : inviteStatus === "maybe"
+                          ? "Maybe"
+                            : inviteStatus === "cant"
+                              ? "Can't"
+                              : "Pending";
+                      const inviteCardStyle: CSSProperties | undefined = relatedPlan
+                        ? getPlanPillStyle(
+                            relatedPlan,
+                            personColorById.get(relatedPlan.ownerId) ?? "#20c9a6",
+                            getGoingStripeColorsForPlan(relatedPlan)
+                          )
+                        : undefined;
+                      const isSelfOwner = relatedPlan ? relatedPlan.ownerId === selfPersonId : false;
+                      const ownerCloudPerson = relatedPlan
+                        ? cloudFriendPeople.find((person) => person.id === relatedPlan.ownerId)
+                        : null;
+                      const ownerLocalPerson = relatedPlan
+                        ? store.people.find((person) => person.id === relatedPlan.ownerId)
+                        : null;
+                      const ownerName = isSelfOwner ? "You" : ownerLocalPerson?.name ?? ownerCloudPerson?.name ?? "Friend";
+                      const ownerAvatar = isSelfOwner ? authAvatarUrl : ownerCloudPerson?.avatarUrl ?? null;
+                      return (
+                        <Panel
+                          key={invite.id}
+                          variant="card"
+                          borderWidth={1}
+                          className="notification-card notification-card-invite prefs-section"
+                          style={inviteCardStyle}
+                        >
+                          <div className="notification-card-head">
+                            <span className="notification-owner-inline">
+                              <span className="pill-icon-badge user-pill-avatar manager-card-avatar" aria-hidden="true">
+                                {ownerAvatar ? (
+                                  <img src={ownerAvatar} alt={ownerName} loading="eager" referrerPolicy="no-referrer" crossOrigin="anonymous" />
+                                ) : (
+                                  ownerName.slice(0, 1).toUpperCase()
+                                )}
+                              </span>
+                              <span className="notification-owner-name">{ownerName}</span>
+                            </span>
+                            <h4>{relatedPlan?.name ?? "Plan Invite"}</h4>
+                            <span className={`notification-chip status-${inviteStatus}`}>{inviteStatusLabel}</span>
+                          </div>
+                          <p className="notification-card-body">
+                            {relatedPlan
+                              ? `${relatedPlan.fromDate} to ${relatedPlan.toDate}${relatedPlan.allDay ? " (All day)" : ` | ${relatedPlan.fromTime}-${relatedPlan.toTime}`}`
+                              : invite.plan_id}
+                          </p>
+                          <div className="notification-actions">
+                            <Button type="button" variant="success" onClick={() => void handleInviteResponse(invite.id, "going")}>
+                              Going
+                            </Button>
+                            <Button type="button" variant="info" onClick={() => void handleInviteResponse(invite.id, "maybe")}>
+                              Maybe
+                            </Button>
+                            <Button type="button" variant="delete" onClick={() => void handleInviteResponse(invite.id, "cant")}>
+                              Can't
+                            </Button>
+                          </div>
+                        </Panel>
+                      );
+                    })
+                  ) : (
+                    <p className="cloud-meta">No plan invites.</p>
+                  )}
+                </div>
+              </Panel>
+              ) : null}
+              {notificationsTab === "activity" ? (
+              <Panel variant="card" borderWidth={1} className="notifications-section">
+                <div className="notifications-section-header">
+                  <h3>Activity</h3>
+                  <div className="notifications-section-actions">
+                    <span className="notifications-count">{activityNotifications.length}</span>
+                    <Button type="button" variant="ghost" onClick={() => void clearActivityNotifications()}>
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+                <div className="notifications-list">
+                  {activityNotifications.length > 0 ? (
+                    activityNotifications.map((notification) => (
+                      <Panel key={notification.id} variant="card" borderWidth={1} className="notification-card prefs-section">
+                        <div className="notification-card-head">
+                          <h4>{notification.title}</h4>
+                          <span className={`notification-chip ${notification.is_read ? "status-read" : "status-unread"}`}>
+                            {notification.is_read ? "Read" : "Unread"}
+                          </span>
+                        </div>
+                        <p className="notification-card-body">{notification.body}</p>
+                        <p className="notification-card-meta">Type: {notification.type}</p>
+                        <div className="notification-actions">
+                          {!notification.is_read ? (
+                            <Button type="button" variant="ghost" onClick={() => void markAsRead(notification.id)}>
+                              Mark Read
+                            </Button>
+                          ) : null}
+                          <Button type="button" variant="delete" onClick={() => void deleteActivityNotification(notification.id)}>
+                            Delete
                           </Button>
                         </div>
-                      ) : null}
-                    </Panel>
-                  );
-                })
-              ) : (
-                <p className="cloud-meta">No plan invites.</p>
-              )}
-              {cloudNotifications.length > 0 ? (
-                cloudNotifications.map((notification) => (
-                  <Panel key={notification.id} variant="card" borderWidth={1} className="plan-list-item prefs-section">
-                    <h3>{notification.title}</h3>
-                    <p>{notification.body}</p>
-                    <p>Type: {notification.type}</p>
-                    {!notification.is_read ? (
-                      <div className="plan-item-actions">
-                        <Button type="button" variant="ghost" onClick={() => void markAsRead(notification.id)}>
-                          Mark Read
-                        </Button>
-                      </div>
-                    ) : null}
-                  </Panel>
-                ))
-              ) : (
-                <p className="cloud-meta">No notification items.</p>
-              )}
-            </div>
-            <div className="ef-modal-actions">
-              <Button variant="primary" type="button" onClick={() => setNotificationsOpen(false)}>
-                Close
-              </Button>
+                      </Panel>
+                    ))
+                  ) : (
+                    <p className="cloud-meta">No activity items.</p>
+                  )}
+                </div>
+              </Panel>
+              ) : null}
             </div>
           </div>
         </Modal>

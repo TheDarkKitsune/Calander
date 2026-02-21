@@ -359,6 +359,633 @@ body,
   color: var(--text-muted);
 }
 
+.notifications-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.notifications-toast {
+  border: 2px solid transparent;
+  border-radius: var(--pill-radius);
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    var(--ef-button-info-border) border-box;
+  padding: 8px 10px;
+  color: var(--ef-button-text);
+}
+
+.notifications-toast.is-error {
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    var(--ef-button-danger-border) border-box;
+}
+
+.notifications-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.notifications-summary-card {
+  display: grid;
+  gap: 5px;
+  border: 1px solid color-mix(in oklab, var(--line) 82%, transparent);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: linear-gradient(140deg, rgba(14, 24, 44, 0.9), rgba(8, 14, 26, 0.9));
+  min-height: 68px;
+  align-content: space-between;
+}
+
+.notifications-summary-label {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.notifications-summary-card strong {
+  font-size: 1.15rem;
+  line-height: 1;
+  color: var(--text-strong);
+}
+
+.notifications-sections {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+
+.notifications-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+}
+
+.notifications-tab-btn {
+  width: 100%;
+}
+
+.notifications-tabs .notifications-tab-btn:first-child {
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+}
+
+.notifications-tabs .notifications-tab-btn:last-child {
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
+}
+
+.manager-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.manager-section {
+  min-height: 0;
+}
+
+.manager-list {
+  max-height: min(42vh, 360px);
+}
+
+.manager-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.manager-card {
+  gap: 8px;
+}
+
+.manager-card-button {
+  width: 100%;
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  border-radius: 8px !important;
+  border: 2px solid transparent !important;
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    linear-gradient(
+      135deg,
+      color-mix(in oklab, var(--plan-color, #20c9a6) 82%, white 18%),
+      color-mix(in oklab, var(--plan-color, #20c9a6) 70%, white 30%)
+    ) border-box !important;
+  box-shadow: none !important;
+  padding: 6px 8px !important;
+}
+
+.manager-card-name {
+  font-weight: 700;
+  font-size: 0.64rem;
+  color: #dffaff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.manager-card-meta {
+  font-size: 0.64rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.manager-card-avatar {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  border-radius: 6px;
+}
+
+.manager-group-icon {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  border-radius: 6px;
+  font-size: 0.74rem;
+  line-height: 1;
+}
+
+.plan-list-clickable {
+  cursor: pointer;
+}
+
+.plan-list-pill-card {
+  border-radius: 8px !important;
+  border: 2px solid transparent !important;
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    var(--plan-gradient, linear-gradient(
+      135deg,
+      color-mix(in oklab, var(--plan-color, #20c9a6) 82%, white 18%),
+      color-mix(in oklab, var(--plan-color, #20c9a6) 70%, white 30%)
+    )) border-box !important;
+  box-shadow: none !important;
+  gap: 8px;
+}
+
+.plan-date-group {
+  display: grid;
+  gap: 10px;
+}
+
+.plan-date-divider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.68rem;
+  min-height: 24px;
+}
+
+.plan-date-divider::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: color-mix(in oklab, var(--line) 74%, transparent);
+  transform: translateY(-50%);
+  z-index: 0;
+}
+
+.plan-date-divider > span {
+  position: relative;
+  z-index: 1;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--line) 78%, transparent);
+  background: color-mix(in oklab, var(--ef-surface) 90%, transparent);
+}
+
+.plan-date-group:first-child .plan-date-divider {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.plan-date-group-list {
+  display: grid;
+  gap: 8px;
+}
+
+.plan-participant-row {
+  cursor: default;
+}
+
+.modal-header-icon-btn {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ef-modal-head-action {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ef-modal-head-action.is-info {
+  border-color: color-mix(in oklab, var(--accent-bright) 70%, transparent);
+}
+
+.ef-modal-head-action.is-delete {
+  border-color: color-mix(in oklab, #ff6b6b 72%, transparent);
+}
+
+.status-text-going {
+  color: #9ff0cd;
+}
+
+.status-text-maybe {
+  color: #b7deff;
+}
+
+.status-text-cant {
+  color: #ffb5b5;
+}
+
+.status-text-pending {
+  color: #ffd8a1;
+}
+
+.plan-owner-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.plan-owner-name {
+  font-size: 0.74rem;
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+.plan-list-pill-card .notification-card-head,
+.notification-card-invite .notification-card-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.plan-list-pill-card .notification-card-head h4,
+.notification-card-invite .notification-card-head h4 {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  width: min(58%, 320px);
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #f2fcff;
+  text-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
+  z-index: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plan-list-pill-card .notification-chip,
+.notification-card-invite .notification-chip {
+  justify-self: end;
+  position: relative;
+  z-index: 1;
+}
+
+.notification-owner-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.notification-owner-name {
+  font-size: 0.68rem;
+  color: var(--text-soft);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-owner-spacer {
+  display: inline-block;
+  width: 1px;
+  height: 1px;
+}
+
+.notifications-section {
+  border: 1px solid color-mix(in oklab, var(--line) 84%, transparent);
+  border-radius: 14px;
+  background: rgba(9, 14, 26, 0.72);
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.notifications-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.notifications-section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notifications-section-header h3,
+.notifications-section-header h4 {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text-strong);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.notifications-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  padding: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--ef-button-text);
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    linear-gradient(135deg, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0.35)) border-box;
+}
+
+.notifications-list {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.notification-card {
+  display: grid;
+  gap: 8px;
+  border-radius: 12px !important;
+  border: 0 !important;
+  position: relative;
+  overflow: hidden;
+}
+
+.notification-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 2px;
+  border-radius: inherit;
+  background: var(--plan-gradient, var(--ef-button-border));
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.notification-card-invite {
+  --plan-gradient: var(--ef-button-info-border);
+}
+
+.notification-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.notification-card-head h4 {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-strong);
+}
+
+.notification-card-body {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.notification-card-meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.notification-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 6px;
+}
+
+.notification-actions .ef-button {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+}
+
+.notification-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    linear-gradient(135deg, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0.35)) border-box;
+  padding: 0 9px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ef-button-text);
+  white-space: nowrap;
+}
+
+.notification-chip.status-pending {
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    var(--ef-button-warning-border) border-box;
+}
+
+.notification-chip.status-going {
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    var(--ef-button-success-border) border-box;
+}
+
+.notification-chip.status-maybe {
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    var(--ef-button-info-border) border-box;
+}
+
+.notification-chip.status-cant {
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    var(--ef-button-danger-border) border-box;
+}
+
+.notification-chip.status-read {
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    linear-gradient(135deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.22)) border-box;
+  color: var(--text-muted);
+}
+
+.notification-chip.status-unread {
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    var(--ef-button-info-border) border-box;
+}
+
+@media (max-width: 640px) {
+  .notifications-modal {
+    gap: 10px;
+  }
+
+  .notifications-toast {
+    font-size: 0.78rem;
+    padding: 7px 9px;
+  }
+
+  .notifications-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .notifications-summary-card {
+    padding: 9px 10px;
+    min-height: 64px;
+  }
+
+  .notifications-list {
+    max-height: min(38vh, 280px);
+  }
+
+  .manager-list {
+    max-height: min(40vh, 300px);
+  }
+
+  .notifications-section {
+    padding: 8px;
+    border-radius: 12px;
+  }
+
+  .notifications-section-header {
+    gap: 6px;
+  }
+
+  .notifications-section-header h3,
+  .notifications-section-header h4 {
+    font-size: 0.8rem;
+  }
+
+  .notifications-count {
+    width: 24px;
+    height: 24px;
+    font-size: 0.68rem;
+  }
+
+  .notification-card {
+    gap: 7px;
+    padding: 8px !important;
+  }
+
+  .notification-card-head {
+    gap: 8px;
+  }
+
+  .notification-card-head h4 {
+    font-size: 0.8rem;
+  }
+
+  .notification-card-body {
+    font-size: 0.78rem;
+    line-height: 1.3;
+  }
+
+  .notification-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .notification-actions .ef-button {
+    width: 100%;
+    min-height: 30px;
+    padding: 6px 8px;
+    font-size: 0.72rem;
+  }
+
+  .notification-chip {
+    height: 22px;
+    padding: 0 8px;
+    font-size: 0.64rem;
+  }
+
+  .manager-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .manager-actions .ef-button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+
+
 .member-manager {
   border: 1px solid rgba(124, 77, 255, 0.3);
   border-radius: 10px;
@@ -681,9 +1308,14 @@ body,
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   touch-action: pan-x;
   padding-bottom: 2px;
+}
+
+.secondary-pill-list::-webkit-scrollbar {
+  display: none;
 }
 
 .secondary-pill {
@@ -732,6 +1364,20 @@ body,
   font-size: 0.62rem;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.user-pill-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 999px;
+  display: block;
+}
+
+.day-person-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .status-toolbar {
@@ -944,8 +1590,10 @@ body,
   height: 15px;
   display: inline-flex;
   align-items: center;
-  background: var(--plan-gradient, color-mix(in oklab, var(--plan-color, #20c9a6) 36%, transparent));
-  border: 1px solid var(--plan-border-color, color-mix(in oklab, var(--plan-color, #20c9a6) 76%, white 12%));
+  border: 2px solid transparent;
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    var(--plan-gradient, linear-gradient(135deg, color-mix(in oklab, var(--plan-color, #20c9a6) 82%, white 18%), color-mix(in oklab, var(--plan-color, #20c9a6) 70%, white 30%))) border-box;
   color: #dffaff;
   border-radius: 5px !important;
   font-size: 0.64rem;
@@ -1410,8 +2058,10 @@ body,
   width: calc(((100% - 8px) / var(--lane-count, 1)) - 2px);
   min-height: 22px;
   border-radius: 7px;
-  border: 1px solid var(--plan-border-color, color-mix(in oklab, var(--plan-color, #20c9a6) 58%, white 10%));
-  background: var(--plan-gradient, color-mix(in oklab, var(--plan-color, #20c9a6) 36%, transparent));
+  border: 2px solid transparent;
+  background:
+    linear-gradient(color-mix(in oklab, var(--plan-color, #20c9a6) 14%, var(--ef-button-surface)), color-mix(in oklab, var(--plan-color, #20c9a6) 14%, var(--ef-button-surface))) padding-box,
+    var(--plan-gradient, linear-gradient(135deg, color-mix(in oklab, var(--plan-color, #20c9a6) 82%, white 18%), color-mix(in oklab, var(--plan-color, #20c9a6) 70%, white 30%))) border-box;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.22);
   padding: 4px 6px;
   display: flex;

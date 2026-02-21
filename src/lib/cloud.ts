@@ -99,6 +99,14 @@ export type CloudFriend = {
   friendship_id: string;
   user_id: string;
   username: string;
+  avatar_url?: string | null;
+  active?: boolean;
+};
+
+export type CloudProfile = {
+  id: string;
+  username: string | null;
+  avatar_url: string | null;
 };
 
 export const getCloudUser = async () => {
@@ -154,17 +162,33 @@ export const listCloudFriends = async (userId: string) => {
 
     const { data: profiles, error: profilesError } = await supabase
       .from("profiles")
-      .select("id, username")
+      .select("id, username, avatar_url")
       .in("id", friendIds);
     if (profilesError) {
       return { friends: [] as CloudFriend[], error: profilesError.message };
     }
-    const usernameById = new Map(
-      ((profiles ?? []) as Array<{ id: string; username?: string | null }>).map((profile) => [
+    const profileById = new Map(
+      ((profiles ?? []) as Array<{ id: string; username?: string | null; avatar_url?: string | null }>).map((profile) => [
         profile.id,
-        profile.username?.trim() || "Friend",
+        {
+          username: profile.username?.trim() || "Friend",
+          avatar_url: profile.avatar_url ?? null,
+        },
       ])
     );
+
+    let activeFriendIds = new Set<string>();
+    const { data: statuses, error: statusError } = await supabase
+      .from("user_status")
+      .select("user_id, status")
+      .in("user_id", friendIds);
+    if (!statusError) {
+      activeFriendIds = new Set(
+        ((statuses ?? []) as Array<{ user_id: string; status?: string | null }>)
+          .filter((entry) => entry.user_id && (entry.status ?? "offline") !== "offline")
+          .map((entry) => entry.user_id)
+      );
+    }
 
     const friends: CloudFriend[] = [];
     const used = new Set<string>();
@@ -174,7 +198,9 @@ export const listCloudFriends = async (userId: string) => {
       friends.push({
         friendship_id: row.id,
         user_id: friendId,
-        username: usernameById.get(friendId) ?? "Friend",
+        username: profileById.get(friendId)?.username ?? "Friend",
+        avatar_url: profileById.get(friendId)?.avatar_url ?? null,
+        active: activeFriendIds.has(friendId),
       });
       used.add(friendId);
     }
@@ -182,6 +208,34 @@ export const listCloudFriends = async (userId: string) => {
   } catch (error) {
     return { friends: [] as CloudFriend[], error: error instanceof Error ? error.message : "Failed to load friends." };
   }
+};
+
+export const onCloudFriendStatusChange = (friendUserIds: string[], onChange: () => void) => {
+  if (!supabase || friendUserIds.length === 0) return () => undefined;
+  const friendIdSet = new Set(friendUserIds);
+  const channel = supabase
+    .channel(`calendar-friend-status-${friendUserIds.slice(0, 6).join("-")}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "user_status" }, (payload) => {
+      const nextUserId = String((payload as { new?: { user_id?: string } }).new?.user_id ?? "");
+      const prevUserId = String((payload as { old?: { user_id?: string } }).old?.user_id ?? "");
+      if (friendIdSet.has(nextUserId) || friendIdSet.has(prevUserId)) {
+        onChange();
+      }
+    })
+    .subscribe();
+  return () => {
+    void supabase.removeChannel(channel);
+  };
+};
+
+export const getCloudProfile = async (userId: string) => {
+  if (!supabase) return { profile: null as CloudProfile | null, error: "Cloud is not configured." };
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, username, avatar_url")
+    .eq("id", userId)
+    .maybeSingle<CloudProfile>();
+  return { profile: data ?? null, error: error?.message ?? null };
 };
 
 export const sendCloudFriendRequestByUsername = async (userId: string, username: string) => {
@@ -650,6 +704,26 @@ export const markNotificationRead = async (notificationId: string) => {
     .from("calendar_notifications")
     .update({ is_read: true })
     .eq("id", notificationId);
+  return { error: error?.message ?? null };
+};
+
+export const deleteNotification = async (notificationId: string) => {
+  if (!supabase) return { error: "Cloud is not configured." };
+  const { error } = await supabase
+    .from("calendar_notifications")
+    .delete()
+    .eq("id", notificationId);
+  return { error: error?.message ?? null };
+};
+
+export const clearNotificationsByIds = async (notificationIds: string[]) => {
+  if (!supabase) return { error: "Cloud is not configured." };
+  const uniqueIds = [...new Set(notificationIds.filter(Boolean))];
+  if (uniqueIds.length === 0) return { error: null as string | null };
+  const { error } = await supabase
+    .from("calendar_notifications")
+    .delete()
+    .in("id", uniqueIds);
   return { error: error?.message ?? null };
 };
 
