@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type TouchEvent } from "react";
 import { Button, Dropdown, FloatingFooter, Input, MainHeader, Modal, Panel, PreferencesModal, SideMenu, SideMenuSubmenu, Toggle, applyTheme, getStoredTheme } from "@enderfall/ui";
 import { FaBell, FaEdit, FaList, FaPen, FaTrashAlt, FaUserFriends, FaUsers } from "react-icons/fa";
 import { FaInfinity } from "react-icons/fa6";
@@ -10,8 +10,8 @@ import {
   isCloudConfigured,
   joinCloudRoom,
   listIncomingPlanInvites,
+  listOwnedPlanInvites,
   listNotifications,
-  listSharedGroupsForOwners,
   listVisibleSharedPlans,
   listCloudFriends,
   listCloudRoomMembers,
@@ -28,12 +28,11 @@ import {
   signOutCloud,
   signUpCloud,
   syncSharedPlanInvites,
-  upsertSharedGroups,
   upsertSharedPlans,
   deleteSharedPlan,
   writeCloudRoom,
 } from "./lib/cloud";
-import type { CloudFriend, CloudMember, CloudNotification, SharedGroupRecord, SharedInvitePayload, SharedPlanPayload } from "./lib/cloud";
+import type { CloudFriend, CloudMember, CloudNotification, OwnedPlanInviteStatus, SharedInvitePayload, SharedPlanPayload } from "./lib/cloud";
 
 type DayStatus =
   | "none"
@@ -55,8 +54,12 @@ type CloudUser = { id: string; email: string | null };
 type Plan = {
   id: string;
   name: string;
+  summary: string;
+  location: string;
   ownerId: string;
   targetGroupIds: string[];
+  excludedPersonIds: string[];
+  isPrivate: boolean;
   fromDate: string;
   toDate: string;
   allDay: boolean;
@@ -67,9 +70,13 @@ type Plan = {
 type LegacyPlan = {
   id?: string;
   name?: string;
+  summary?: string;
+  location?: string;
   ownerId?: string;
   targetCalendarId?: string;
   targetGroupIds?: string[];
+  excludedPersonIds?: string[];
+  isPrivate?: boolean;
   fromDate?: string;
   toDate?: string;
   allDay?: boolean;
@@ -78,6 +85,7 @@ type LegacyPlan = {
   invitedIds?: string[];
 };
 type RecurrenceType = "weekly" | "fortnightly" | "four-weekly" | "monthly" | "yearly" | "custom";
+type InviteResponse = "going" | "maybe" | "cant";
 
 type CalendarStore = {
   version: 2;
@@ -162,6 +170,8 @@ const themeOptions: { value: ThemeMode; label: string }[] = [
   { value: "plain-light", label: "Plain Light" },
   { value: "plain-dark", label: "Plain Dark" },
 ];
+const SHARED_PRIVATE_TAG = "__visibility_private__";
+const SHARED_EXCLUDE_TAG_PREFIX = "__exclude__:";
 
 const STATUS_OPTIONS: StatusOption[] = [
   { id: "available", label: "Holiday available", short: "Available", cellClass: "status-available", swatchClass: "swatch-available" },
@@ -264,7 +274,33 @@ const normalizeLocalGroupId = (value: string, fallback = "") => {
 const normalizeGroupRef = (value: string, fallback = "") => {
   const shared = parseSharedGroupRef(value);
   if (!shared) return normalizeLocalGroupId(value, fallback);
-  return `${shared.ownerId}:${normalizeLocalGroupId(shared.groupKey, fallback)}`;
+  return normalizeLocalGroupId(shared.groupKey, fallback);
+};
+const encodeSharedTargetGroupIds = (plan: Pick<Plan, "isPrivate" | "excludedPersonIds">) => {
+  const encoded = [] as string[];
+  if (plan.isPrivate) encoded.push(SHARED_PRIVATE_TAG);
+  for (const personId of plan.excludedPersonIds) {
+    if (isUuid(personId)) encoded.push(`${SHARED_EXCLUDE_TAG_PREFIX}${personId.toLowerCase()}`);
+  }
+  return encoded;
+};
+const decodeSharedTargetGroupIds = (value: string[] | null | undefined) => {
+  const targetGroupIds: string[] = [];
+  const excludedPersonIds: string[] = [];
+  let isPrivate = false;
+  for (const entry of value ?? []) {
+    if (entry === SHARED_PRIVATE_TAG) {
+      isPrivate = true;
+      continue;
+    }
+    if (entry.startsWith(SHARED_EXCLUDE_TAG_PREFIX)) {
+      const personId = entry.slice(SHARED_EXCLUDE_TAG_PREFIX.length).trim().toLowerCase();
+      if (isUuid(personId)) excludedPersonIds.push(personId);
+      continue;
+    }
+    targetGroupIds.push(entry);
+  }
+  return { targetGroupIds, excludedPersonIds, isPrivate };
 };
 const inferGroupIcon = (groupName: string, groupId = "") => {
   const source = `${groupName} ${groupId}`.trim().toLowerCase();
@@ -362,13 +398,9 @@ const loadStore = (): CalendarStore => {
 
 const buildCalendarDays = (anchorMonth: Date) => {
   const monthStart = startOfMonth(anchorMonth);
-  const monthEnd = endOfMonth(anchorMonth);
   const shift = (monthStart.getDay() + 6) % 7;
   const gridStart = new Date(monthStart.getFullYear(), monthStart.getMonth(), monthStart.getDate() - shift);
-  const monthEndShift = (monthEnd.getDay() + 6) % 7;
-  const gridEnd = new Date(monthEnd.getFullYear(), monthEnd.getMonth(), monthEnd.getDate() + (6 - monthEndShift));
-  const dayCount = Math.round((gridEnd.getTime() - gridStart.getTime()) / (24 * 60 * 60 * 1000)) + 1;
-  return Array.from({ length: dayCount }, (_, index) => {
+  return Array.from({ length: 42 }, (_, index) => {
     const day = new Date(gridStart);
     day.setDate(gridStart.getDate() + index);
     return day;
@@ -377,6 +409,12 @@ const buildCalendarDays = (anchorMonth: Date) => {
 
 const formatSyncTime = (timestamp: number | null) =>
   timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Never";
+const normalizeInviteStatus = (status: string): "pending" | InviteResponse => {
+  if (status === "accepted") return "going";
+  if (status === "rejected") return "cant";
+  if (status === "going" || status === "maybe" || status === "cant") return status;
+  return "pending";
+};
 
 const isDateInRange = (dateKey: string, fromDate: string, toDate: string) => {
   const [start, end] = fromDate <= toDate ? [fromDate, toDate] : [toDate, fromDate];
@@ -399,14 +437,24 @@ const normalizePlans = (value: unknown, groups: Group[], defaultOwnerId: string)
         .filter((id) => typeof id === "string")
         .map((id) => normalizeGroupRef(id))
         .filter((id) => id && groupIds.has(id));
+      const excludedPersonIds = Array.isArray(plan.excludedPersonIds)
+        ? plan.excludedPersonIds
+            .filter((personId): personId is string => typeof personId === "string")
+            .map((personId) => personId.trim().toLowerCase())
+            .filter((personId) => isUuid(personId))
+        : [];
       if (!plan.name || !plan.fromDate || !plan.toDate) return null;
       const name = String(plan.name).trim();
       const id = typeof plan.id === "string" && plan.id.trim() ? plan.id.trim() : createId(`${name}-${index + 1}`);
       return {
         id,
         name,
+        summary: typeof plan.summary === "string" ? plan.summary.trim() : "",
+        location: typeof plan.location === "string" ? plan.location.trim() : "",
         ownerId: typeof plan.ownerId === "string" && plan.ownerId.trim() ? plan.ownerId.trim() : defaultOwnerId,
         targetGroupIds,
+        excludedPersonIds,
+        isPrivate: Boolean(plan.isPrivate),
         fromDate: String(plan.fromDate),
         toDate: String(plan.toDate),
         allDay: Boolean(plan.allDay),
@@ -432,6 +480,20 @@ const timeToMinutes = (value: string) => {
   if (!Number.isFinite(hour) || !Number.isFinite(minute)) return 0;
   return Math.max(0, Math.min(24 * 60, hour * 60 + minute));
 };
+const rangesOverlap = (startA: string, endA: string, startB: string, endB: string) => {
+  return !(endA < startB || endB < startA);
+};
+const plansOverlap = (a: Pick<Plan, "fromDate" | "toDate" | "allDay" | "fromTime" | "toTime">, b: Pick<Plan, "fromDate" | "toDate" | "allDay" | "fromTime" | "toTime">) => {
+  if (!rangesOverlap(a.fromDate, a.toDate, b.fromDate, b.toDate)) return false;
+  if (a.allDay || b.allDay) return true;
+  const aStart = timeToMinutes(a.fromTime);
+  const aEnd = timeToMinutes(a.toTime);
+  const bStart = timeToMinutes(b.fromTime);
+  const bEnd = timeToMinutes(b.toTime);
+  return aStart < bEnd && bStart < aEnd;
+};
+const formatConflictSummary = (plan: Pick<Plan, "name" | "fromDate" | "toDate" | "allDay" | "fromTime" | "toTime" | "location">) =>
+  `${plan.name} (${plan.fromDate}${plan.allDay ? "" : ` ${plan.fromTime}`} -> ${plan.toDate}${plan.allDay ? " All day" : ` ${plan.toTime}`}${plan.location ? ` @ ${plan.location}` : ""})`;
 const parseKeyDate = (value: string) => {
   const [year, month, day] = value.split("-").map((part) => Number(part));
   return new Date(year, month - 1, day);
@@ -571,11 +633,18 @@ export default function App() {
   const [friendRequestBusy, setFriendRequestBusy] = useState(false);
   const [friendRequestMessage, setFriendRequestMessage] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [inviteActionMessage, setInviteActionMessage] = useState("");
   const [cloudNotifications, setCloudNotifications] = useState<CloudNotification[]>([]);
   const [incomingPlanInvites, setIncomingPlanInvites] = useState<SharedInvitePayload[]>([]);
+  const [ownedPlanInvites, setOwnedPlanInvites] = useState<OwnedPlanInviteStatus[]>([]);
   const [sharedPlans, setSharedPlans] = useState<Plan[]>([]);
   const [planName, setPlanName] = useState("");
+  const [planSummary, setPlanSummary] = useState("");
+  const [planLocation, setPlanLocation] = useState("");
   const [planTargetGroupIds, setPlanTargetGroupIds] = useState<string[]>([]);
+  const [planIsPrivate, setPlanIsPrivate] = useState(false);
+  const [planCustomizeMembers, setPlanCustomizeMembers] = useState(false);
+  const [planExcludedPersonIds, setPlanExcludedPersonIds] = useState<string[]>([]);
   const [planFromDate, setPlanFromDate] = useState(() => toKeyDate(new Date()));
   const [planToDate, setPlanToDate] = useState(() => toKeyDate(new Date()));
   const [planAllDay, setPlanAllDay] = useState(false);
@@ -592,6 +661,7 @@ export default function App() {
   const [hiddenFriendIds, setHiddenFriendIds] = useState<string[]>([]);
   const [hiddenGroupIds, setHiddenGroupIds] = useState<string[]>([]);
   const [collapsedPersonIds, setCollapsedPersonIds] = useState<string[]>([]);
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const storeRef = useRef(store);
   const remoteApplyRef = useRef(false);
@@ -604,23 +674,33 @@ export default function App() {
 
   useEffect(() => {
     setStore((current) => {
-      const keepIds = new Set(PREDEFINED_GROUPS.map((group) => group.id));
-      const nextGroups = current.groups.filter((group) => keepIds.has(group.id) || Boolean(parseSharedGroupRef(group.id)));
-      if (nextGroups.length === current.groups.length) return current;
+      const nextGroups = [...PREDEFINED_GROUPS];
+      for (const group of current.groups) {
+        const normalizedId = normalizeLocalGroupId(group.id, group.name);
+        if (nextGroups.some((entry) => entry.id === normalizedId)) continue;
+        nextGroups.push({
+          ...group,
+          id: normalizedId,
+        });
+      }
       const validIds = new Set(nextGroups.map((group) => group.id));
       return {
         ...current,
         groups: nextGroups,
         people: current.people.map((person) => ({
           ...person,
-          groupIds: person.groupIds.filter((groupId) => validIds.has(groupId)),
+          groupIds: person.groupIds
+            .map((groupId) => normalizeLocalGroupId(groupId))
+            .filter((groupId) => validIds.has(groupId)),
         })),
       };
     });
     setPlans((current) =>
       current.map((plan) => ({
         ...plan,
-        targetGroupIds: plan.targetGroupIds.filter((groupId) => PREDEFINED_GROUPS.some((group) => group.id === groupId) || Boolean(parseSharedGroupRef(groupId))),
+        targetGroupIds: plan.targetGroupIds
+          .map((groupId) => normalizeLocalGroupId(groupId))
+          .filter((groupId, index, source) => source.indexOf(groupId) === index),
       }))
     );
   }, []);
@@ -1076,6 +1156,72 @@ export default function App() {
     () => cloudFriendPeople.filter((person) => person.id !== selfPersonId),
     [cloudFriendPeople, selfPersonId]
   );
+  const planSelectedGroupMemberIds = useMemo(() => {
+    if (planTargetGroupIds.length === 0) return [] as string[];
+    const memberIds = new Set<string>();
+    for (const person of cloudFriendPeople) {
+      if (person.id === selfPersonId) continue;
+      if (person.groupIds.some((groupId) => planTargetGroupIds.includes(groupId))) {
+        memberIds.add(person.id);
+      }
+    }
+    return [...memberIds];
+  }, [cloudFriendPeople, planTargetGroupIds, selfPersonId]);
+  const planCanCustomizeMembers = planTargetGroupIds.length > 0 && planSelectedGroupMemberIds.length > 1;
+  useEffect(() => {
+    if (!planCanCustomizeMembers) {
+      setPlanCustomizeMembers(false);
+      setPlanExcludedPersonIds([]);
+      return;
+    }
+    setPlanExcludedPersonIds((current) => current.filter((personId) => planSelectedGroupMemberIds.includes(personId)));
+  }, [planCanCustomizeMembers, planSelectedGroupMemberIds]);
+  const shareRecipientIdsByPlan = useMemo(() => {
+    const result = new Map<string, string[]>();
+    for (const plan of plans) {
+      const recipients = new Set<string>();
+      if (!plan.isPrivate) {
+        if (plan.targetGroupIds.length > 0) {
+          for (const person of cloudFriendPeople) {
+            if (person.id === selfPersonId) continue;
+            if (plan.excludedPersonIds.includes(person.id)) continue;
+            if (person.groupIds.some((groupId) => plan.targetGroupIds.includes(groupId))) {
+              recipients.add(person.id);
+            }
+          }
+        }
+      }
+      for (const participantId of plan.invitedIds) {
+        if (participantId === selfPersonId || plan.excludedPersonIds.includes(participantId)) continue;
+        recipients.add(participantId);
+      }
+      result.set(plan.id, [...recipients]);
+    }
+    return result;
+  }, [cloudFriendPeople, plans, selfPersonId]);
+  const acceptedInviteeColorByPlan = useMemo(() => {
+    const acceptedByPlan = new Map<string, string[]>();
+    const colorByPersonId = new Map(store.people.map((person) => [person.id, person.color] as const));
+    for (const invite of ownedPlanInvites) {
+      const normalizedStatus = normalizeInviteStatus(invite.status);
+      if (normalizedStatus !== "going") continue;
+      const color = colorByPersonId.get(invite.invitee_id);
+      if (!color) continue;
+      const current = acceptedByPlan.get(invite.plan_id) ?? [];
+      if (!current.includes(color)) current.push(color);
+      acceptedByPlan.set(invite.plan_id, current);
+    }
+    return acceptedByPlan;
+  }, [ownedPlanInvites, store.people]);
+  const inviteResponseByPlanAndPerson = useMemo(() => {
+    const statusMap = new Map<string, InviteResponse>();
+    for (const invite of ownedPlanInvites) {
+      const normalizedStatus = normalizeInviteStatus(invite.status);
+      if (normalizedStatus === "pending") continue;
+      statusMap.set(`${invite.plan_id}:${invite.invitee_id}`, normalizedStatus);
+    }
+    return statusMap;
+  }, [ownedPlanInvites]);
   const allPlans = useMemo(() => {
     const byId = new Map<string, Plan>();
     plans.forEach((plan) => byId.set(plan.id, plan));
@@ -1098,7 +1244,11 @@ export default function App() {
     (plan: Plan, personId: string) => {
       if (personId === selfPersonId) return true;
       if (plan.ownerId === personId) return true;
-      if (plan.targetGroupIds.length === 0) return true;
+      if (plan.excludedPersonIds.includes(personId)) return false;
+      if (plan.targetGroupIds.length === 0) {
+        if (plan.isPrivate) return false;
+        return true;
+      }
       const person = store.people.find((entry) => entry.id === personId);
       if (!person) return false;
       return plan.targetGroupIds.some((groupId) => person.groupIds.includes(groupId));
@@ -1115,23 +1265,43 @@ export default function App() {
       ),
     [allPlans, isPlanVisibleByGroups, planAppliesToPerson]
   );
+  const getParticipantPlansForDay = useCallback(
+    (dateKey: string, personId: string) =>
+      allPlans.filter(
+        (plan) =>
+          isDateInRange(dateKey, plan.fromDate, plan.toDate) &&
+          (plan.ownerId === personId || plan.invitedIds.includes(personId))
+      ),
+    [allPlans]
+  );
   const getPlanPillStyle = useCallback(
     (plan: Plan, personColor: string): CSSProperties => {
       const firstGroupColor = plan.targetGroupIds
         .map((groupId) => store.groups.find((group) => group.id === groupId)?.color ?? null)
         .find((color): color is string => Boolean(color));
+      const firstAcceptedInviteColor = acceptedInviteeColorByPlan.get(plan.id)?.[0] ?? null;
       const style: CSSProperties = {
         ["--plan-color" as string]: personColor,
       };
-      if (firstGroupColor) {
+      if (firstGroupColor && firstAcceptedInviteColor) {
+        style["--plan-gradient" as string] =
+          `linear-gradient(120deg, color-mix(in oklab, ${personColor} 36%, transparent) 0 62%, color-mix(in oklab, ${firstAcceptedInviteColor} 36%, transparent) 62% 75%, color-mix(in oklab, ${firstGroupColor} 36%, transparent) 75% 100%)`;
+        style["--plan-border-color" as string] =
+          `color-mix(in oklab, ${personColor} 65%, ${firstGroupColor} 20%, ${firstAcceptedInviteColor} 15%)`;
+      } else if (firstGroupColor) {
         style["--plan-gradient" as string] =
           `linear-gradient(120deg, color-mix(in oklab, ${personColor} 36%, transparent) 0 75%, color-mix(in oklab, ${firstGroupColor} 36%, transparent) 75% 100%)`;
         style["--plan-border-color" as string] =
           `color-mix(in oklab, ${personColor} 75%, ${firstGroupColor} 25%)`;
+      } else if (firstAcceptedInviteColor) {
+        style["--plan-gradient" as string] =
+          `linear-gradient(120deg, color-mix(in oklab, ${personColor} 36%, transparent) 0 84%, color-mix(in oklab, ${firstAcceptedInviteColor} 36%, transparent) 84% 100%)`;
+        style["--plan-border-color" as string] =
+          `color-mix(in oklab, ${personColor} 80%, ${firstAcceptedInviteColor} 20%)`;
       }
       return style;
     },
-    [store.groups]
+    [acceptedInviteeColorByPlan, store.groups]
   );
   const formatPlanWhen = (plan: Plan) => {
     if (plan.allDay) return `${plan.fromDate} to ${plan.toDate} (All day)`;
@@ -1271,19 +1441,6 @@ export default function App() {
     setFriendColumnOffset(0);
   };
 
-  const clearMonthForSelected = () => {
-    if (!selectedPerson) return;
-    const monthPrefix = `${monthAnchor.getFullYear()}-${String(monthAnchor.getMonth() + 1).padStart(2, "0")}-`;
-    const personPrefix = `${selectedPerson.id}:${monthPrefix}`;
-    updateStore((current) => {
-      const nextEntries = { ...current.entries };
-      for (const key of Object.keys(nextEntries)) {
-        if (key.startsWith(personPrefix)) delete nextEntries[key];
-      }
-      return { ...current, entries: nextEntries };
-    });
-  };
-
   const closeDayModal = () => {
     setDayModalDate(null);
   };
@@ -1297,7 +1454,12 @@ export default function App() {
   const resetPlanForm = () => {
     const today = toKeyDate(new Date());
     setPlanName("");
+    setPlanSummary("");
+    setPlanLocation("");
     setPlanTargetGroupIds([]);
+    setPlanIsPrivate(false);
+    setPlanCustomizeMembers(false);
+    setPlanExcludedPersonIds([]);
     setPlanFromDate(today);
     setPlanToDate(today);
     setPlanAllDay(false);
@@ -1321,7 +1483,12 @@ export default function App() {
   const openEditPlanModal = (plan: Plan) => {
     setEditingPlanId(plan.id);
     setPlanName(plan.name);
+    setPlanSummary(plan.summary ?? "");
+    setPlanLocation(plan.location ?? "");
     setPlanTargetGroupIds([...plan.targetGroupIds]);
+    setPlanIsPrivate(plan.isPrivate);
+    setPlanCustomizeMembers(plan.excludedPersonIds.length > 0);
+    setPlanExcludedPersonIds([...plan.excludedPersonIds]);
     setPlanFromDate(plan.fromDate);
     setPlanToDate(plan.toDate);
     setPlanAllDay(plan.allDay);
@@ -1372,17 +1539,76 @@ export default function App() {
       return;
     }
 
-    const nextPlan: Plan = {
+    const baseCandidate: Plan = {
       id: editingPlanId ?? createId(planName),
       name: planName.trim(),
+      summary: planSummary.trim(),
+      location: planLocation.trim(),
       ownerId: editingPlanId ? plans.find((plan) => plan.id === editingPlanId)?.ownerId ?? selfPersonId : selfPersonId,
       targetGroupIds: planTargetGroupIds,
+      excludedPersonIds: [],
+      isPrivate: planIsPrivate,
       fromDate: planFromDate,
       toDate: planToDate,
       allDay: planAllDay,
       fromTime: planFromTime,
       toTime: planToTime,
-      invitedIds: planInvitedIds,
+      invitedIds: [],
+    };
+    const candidateInstances: Plan[] = [baseCandidate];
+    if (!editingPlanId && planRecurring) {
+      const repeatCount = planRecurrenceInfinite ? 260 : planRecurrenceCount;
+      let fromDateCursor = planFromDate;
+      let toDateCursor = planToDate;
+      for (let index = 0; index < repeatCount; index += 1) {
+        const shifted = addRecurrenceStep(
+          fromDateCursor,
+          toDateCursor,
+          planRecurrenceType,
+          Math.max(1, planCustomRecurrenceDays)
+        );
+        fromDateCursor = shifted.fromDate;
+        toDateCursor = shifted.toDate;
+        candidateInstances.push({
+          ...baseCandidate,
+          id: createId(`${planName}-${index + 1}`),
+          fromDate: shifted.fromDate,
+          toDate: shifted.toDate,
+        });
+      }
+    }
+    const conflicts = candidateInstances
+      .flatMap((candidate) =>
+        allPlans
+          .filter((plan) => plan.id !== editingPlanId)
+          .filter((plan) => (plan.ownerId === selfPersonId || plan.invitedIds.includes(selfPersonId)))
+          .filter((plan) => plansOverlap(plan, candidate))
+      );
+    if (conflicts.length > 0) {
+      setPlanModalMessage(`You're busy at that time. Conflicts with: ${conflicts.slice(0, 2).map((plan) => formatConflictSummary(plan)).join(" | ")}`);
+      return;
+    }
+
+    const normalizedExcludedIds = planCustomizeMembers
+      ? planExcludedPersonIds.filter((personId) => planSelectedGroupMemberIds.includes(personId))
+      : [];
+    const normalizedInvitedIds = [...new Set(planInvitedIds.filter((personId) => personId && personId !== selfPersonId))];
+
+    const nextPlan: Plan = {
+      id: editingPlanId ?? createId(planName),
+      name: planName.trim(),
+      summary: planSummary.trim(),
+      location: planLocation.trim(),
+      ownerId: editingPlanId ? plans.find((plan) => plan.id === editingPlanId)?.ownerId ?? selfPersonId : selfPersonId,
+      targetGroupIds: planTargetGroupIds,
+      excludedPersonIds: normalizedExcludedIds,
+      isPrivate: planIsPrivate,
+      fromDate: planFromDate,
+      toDate: planToDate,
+      allDay: planAllDay,
+      fromTime: planFromTime,
+      toTime: planToTime,
+      invitedIds: normalizedInvitedIds,
     };
     if (editingPlanId) {
       setPlans((current) => current.map((plan) => (plan.id === editingPlanId ? nextPlan : plan)));
@@ -1422,17 +1648,27 @@ export default function App() {
     }
   };
 
-  const planTargetLabel = (targetGroupIds: string[]) => {
+  const planTargetLabel = (targetGroupIds: string[], isPrivate = false) => {
+    if (isPrivate) return "Private (Only You)";
     const labels = targetGroupIds
       .map((groupId) => store.groups.find((group) => group.id === groupId)?.name)
       .filter((name): name is string => Boolean(name));
-    return labels.length > 0 ? labels.join(", ") : "All Groups (Everyone)";
+    return labels.length > 0 ? labels.join(", ") : "Public (All Friends)";
   };
 
   const invitedNames = (invitedIds: string[]) =>
     invitedIds
       .map((id) => store.people.find((person) => person.id === id)?.name)
       .filter((name): name is string => Boolean(name));
+  const getPlanParticipationStatus = (plan: Plan, personId: string) => {
+    if (plan.ownerId === personId) return "Host";
+    if (!plan.invitedIds.includes(personId)) return "Viewer";
+    const response = inviteResponseByPlanAndPerson.get(`${plan.id}:${personId}`);
+    if (response === "going") return "Going";
+    if (response === "maybe") return "Maybe";
+    if (response === "cant") return "Can't";
+    return "Pending";
+  };
 
   const resetGroupForm = () => {
     setEditingGroupId(null);
@@ -1629,67 +1865,17 @@ export default function App() {
     }
     const { plans: remotePlans, error } = await listVisibleSharedPlans(socialUserId);
     if (error) return;
-    const ownerIds = [...new Set(remotePlans.map((plan) => plan.owner_id).filter(Boolean))];
-    const { groups: sharedGroupRows } = await listSharedGroupsForOwners(ownerIds);
-    const sharedGroups = (sharedGroupRows ?? []) as SharedGroupRecord[];
-    const sharedGroupLookup = new Map(
-      sharedGroups.map((group) => [`${group.owner_id}:${normalizeLocalGroupId(group.group_key, group.name)}`, group] as const)
-    );
-
-    updateStore((current) => {
-      const sanitizedGroups = current.groups.filter((group) => {
-        const shared = parseSharedGroupRef(group.id);
-        return !(shared && shared.ownerId === socialUserId);
-      });
-      const existingIds = new Set(sanitizedGroups.map((group) => group.id));
-      const additions = sharedGroups
-        .filter((group) => group.owner_id !== socialUserId)
-        .map((group) => ({
-          id: `${group.owner_id}:${normalizeLocalGroupId(group.group_key, group.name)}`,
-          name: group.name,
-          icon: group.icon,
-          color: group.color,
-        }))
-        .filter((group) => !existingIds.has(group.id));
-      const groupsChanged = sanitizedGroups.length !== current.groups.length || additions.length > 0;
-      if (!groupsChanged) return current;
-      const nextGroups = [...sanitizedGroups, ...additions];
-      const validIds = new Set(nextGroups.map((group) => group.id));
-      return {
-        ...current,
-        groups: nextGroups,
-        people: current.people.map((person) => ({
-          ...person,
-          groupIds: person.groupIds
-            .map((groupId) => {
-              const shared = parseSharedGroupRef(groupId);
-              if (shared && shared.ownerId === socialUserId) return normalizeLocalGroupId(shared.groupKey);
-              return groupId;
-            })
-            .filter((groupId) => validIds.has(groupId)),
-        })),
-      };
-    });
-
     const normalized: Plan[] = remotePlans.map((plan) => {
-      const targetIds = Array.isArray(plan.target_group_ids) ? plan.target_group_ids : [];
-      const normalizedTargetIds =
-        plan.owner_id === socialUserId
-          ? targetIds.map((groupId) => {
-              const shared = parseSharedGroupRef(groupId);
-              if (shared && shared.ownerId === socialUserId) return normalizeLocalGroupId(shared.groupKey);
-              return normalizeLocalGroupId(groupId);
-            })
-          : targetIds.map((groupId) => {
-              const normalizedGroupId = normalizeLocalGroupId(groupId);
-              const sharedKey = `${plan.owner_id}:${normalizedGroupId}`;
-              return sharedGroupLookup.has(sharedKey) ? sharedKey : normalizeGroupRef(groupId);
-            });
+      const decodedTargets = decodeSharedTargetGroupIds(Array.isArray(plan.target_group_ids) ? plan.target_group_ids : []);
       return {
         id: plan.id,
         name: plan.name,
+        summary: typeof plan.summary === "string" ? plan.summary : "",
+        location: typeof plan.location === "string" ? plan.location : "",
         ownerId: plan.owner_id,
-        targetGroupIds: normalizedTargetIds,
+        targetGroupIds: plan.owner_id === socialUserId ? decodedTargets.targetGroupIds.map((groupId) => normalizeLocalGroupId(groupId)) : [],
+        excludedPersonIds: decodedTargets.excludedPersonIds,
+        isPrivate: decodedTargets.isPrivate,
         fromDate: plan.from_date,
         toDate: plan.to_date,
         allDay: Boolean(plan.all_day),
@@ -1714,6 +1900,21 @@ export default function App() {
     if (!notificationsError) setCloudNotifications(notifications);
     if (!invitesError) setIncomingPlanInvites(invites);
   }, [socialUserId]);
+
+  const refreshOwnedPlanInvites = useCallback(async () => {
+    if (!socialUserId) {
+      setOwnedPlanInvites([]);
+      return;
+    }
+    const ownPlanIds = plans.filter((plan) => plan.ownerId === socialUserId).map((plan) => plan.id);
+    if (ownPlanIds.length === 0) {
+      setOwnedPlanInvites([]);
+      return;
+    }
+    const { invites, error } = await listOwnedPlanInvites(socialUserId, ownPlanIds);
+    if (error) return;
+    setOwnedPlanInvites(invites);
+  }, [plans, socialUserId]);
 
   const openFriendRequestModal = () => {
     setFriendRequestUsername("");
@@ -1750,9 +1951,23 @@ export default function App() {
     setHiddenFriendIds((current) => current.filter((id) => id !== friendUserId));
   };
 
-  const handleInviteResponse = async (inviteId: string, response: "accepted" | "rejected") => {
+  const handleInviteResponse = async (inviteId: string, response: InviteResponse) => {
+    setInviteActionMessage("");
+    const invite = incomingPlanInvites.find((entry) => entry.id === inviteId);
+    const relatedPlan = invite ? allPlans.find((plan) => plan.id === invite.plan_id) : null;
+    if (relatedPlan && (response === "going" || response === "maybe") && selfPersonId) {
+      const conflicts = allPlans
+        .filter((plan) => plan.id !== relatedPlan.id)
+        .filter((plan) => (plan.ownerId === selfPersonId || plan.invitedIds.includes(selfPersonId)))
+        .filter((plan) => plansOverlap(plan, relatedPlan));
+      if (conflicts.length > 0) {
+        setInviteActionMessage(`You're busy at that time. Conflicts with: ${conflicts.slice(0, 2).map((plan) => formatConflictSummary(plan)).join(" | ")}`);
+        return;
+      }
+    }
     const { error } = await respondToPlanInvite(inviteId, response);
     if (error) return;
+    setInviteActionMessage(`Invite updated: ${response === "going" ? "Going" : response === "maybe" ? "Maybe" : "Can't"}.`);
     await refreshNotifications();
     await refreshSharedPlans();
   };
@@ -1775,7 +1990,8 @@ export default function App() {
     if (!socialUserId || !isCloudConfigured) return;
     void refreshSharedPlans();
     void refreshNotifications();
-  }, [socialUserId, refreshNotifications, refreshSharedPlans]);
+    void refreshOwnedPlanInvites();
+  }, [socialUserId, refreshNotifications, refreshSharedPlans, refreshOwnedPlanInvites]);
 
   useEffect(() => {
     if (!socialUserId || !isCloudConfigured) return;
@@ -1783,56 +1999,39 @@ export default function App() {
       void refreshSharedPlans();
       void refreshNotifications();
       void refreshCloudFriends();
+      void refreshOwnedPlanInvites();
     });
     return () => unsubscribe();
-  }, [socialUserId, refreshCloudFriends, refreshNotifications, refreshSharedPlans]);
+  }, [socialUserId, refreshCloudFriends, refreshNotifications, refreshOwnedPlanInvites, refreshSharedPlans]);
 
   useEffect(() => {
     if (!socialUserId || !isCloudConfigured) {
       sharedPlanIdsRef.current = [];
       return;
     }
-    const ownedSharedPlans = plans.filter((plan) => plan.invitedIds.length > 0);
-    const ownGroups = store.groups.filter((group) => {
-      const shared = parseSharedGroupRef(group.id);
-      return !shared || shared.ownerId === socialUserId;
-    });
-    const groupPayload = ownGroups.map((group) => {
-      const shared = parseSharedGroupRef(group.id);
-      return {
-        owner_id: socialUserId,
-        group_key: shared ? shared.groupKey : normalizeLocalGroupId(group.id, group.name),
-        name: group.name,
-        icon: group.icon,
-        color: group.color,
-      };
-    });
+    const ownedSharedPlans = plans.filter((plan) => (shareRecipientIdsByPlan.get(plan.id)?.length ?? 0) > 0);
     const planPayload: SharedPlanPayload[] = ownedSharedPlans.map((plan) => ({
       id: plan.id,
       owner_id: socialUserId,
       name: plan.name,
+      summary: plan.summary,
+      location: plan.location,
       from_date: plan.fromDate,
       to_date: plan.toDate,
       all_day: plan.allDay,
       from_time: plan.fromTime,
       to_time: plan.toTime,
-      target_group_ids: plan.targetGroupIds
-        .map((groupId) => {
-          const shared = parseSharedGroupRef(groupId);
-          if (shared && shared.ownerId !== socialUserId) return null;
-          return shared ? shared.groupKey : normalizeLocalGroupId(groupId);
-        })
-        .filter((groupId): groupId is string => Boolean(groupId)),
-      invited_ids: plan.invitedIds.filter((id) => id && id !== socialUserId && isUuid(id)),
+      target_group_ids: encodeSharedTargetGroupIds(plan),
+      invited_ids: (shareRecipientIdsByPlan.get(plan.id) ?? []).filter((id) => id && id !== socialUserId && isUuid(id)),
     }));
 
-    void upsertSharedGroups(socialUserId, groupPayload);
     void upsertSharedPlans(socialUserId, planPayload);
     ownedSharedPlans.forEach((plan) => {
+      const shareRecipients = shareRecipientIdsByPlan.get(plan.id) ?? [];
       void syncSharedPlanInvites(
         socialUserId,
         plan.id,
-        plan.invitedIds.filter((id) => id && id !== socialUserId && isUuid(id))
+        shareRecipients.filter((id) => id && id !== socialUserId && isUuid(id))
       );
     });
 
@@ -1844,7 +2043,7 @@ export default function App() {
       }
     });
     sharedPlanIdsRef.current = [...currentIds];
-  }, [plans, socialUserId, store.groups]);
+  }, [plans, shareRecipientIdsByPlan, socialUserId]);
 
   const signIn = async (event: FormEvent) => {
     event.preventDefault();
@@ -2030,6 +2229,22 @@ export default function App() {
   const shiftMonth = (direction: -1 | 1) => {
     setMonthAnchor((current) => new Date(current.getFullYear(), current.getMonth() + direction, 1));
   };
+  const onCalendarTouchStart = (event: TouchEvent<HTMLDivElement>) => {
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    swipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+  };
+  const onCalendarTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
+    const touch = event.changedTouches[0];
+    const start = swipeStartRef.current;
+    swipeStartRef.current = null;
+    if (!touch || !start) return;
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    const minSwipeDistance = 48;
+    if (Math.abs(deltaX) < minSwipeDistance || Math.abs(deltaX) <= Math.abs(deltaY)) return;
+    shiftMonth(deltaX < 0 ? 1 : -1);
+  };
 
   const syncReady = Boolean(cloudRoomId && isCloudConfigured && cloudUser);
   const syncMessageClass = syncState === "error" ? "cloud-status is-error" : "cloud-status";
@@ -2149,23 +2364,6 @@ export default function App() {
           }
         />
 
-        <Panel variant="full" borderWidth={2} className="toolbar">
-          <div className="month-controls">
-            <button type="button" onClick={() => shiftMonth(-1)}>
-              Prev
-            </button>
-            <p>{monthLabel}</p>
-            <button type="button" onClick={() => shiftMonth(1)}>
-              Next
-            </button>
-            <button type="button" onClick={() => setMonthAnchor(startOfMonth(new Date()))}>
-              Today
-            </button>
-          </div>
-          <button type="button" className="danger" disabled={!selectedPerson} onClick={clearMonthForSelected}>
-            Clear Selected Month
-          </button>
-        </Panel>
         <Panel variant="full" borderWidth={2} className="secondary-toolbar">
           <article className="secondary-toolbar-column">
             <h3>Friends</h3>
@@ -2180,6 +2378,9 @@ export default function App() {
                     style={{ ["--plan-color" as string]: person.color }}
                     onClick={() => toggleFriendVisibility(person.id)}
                   >
+                    <span className="pill-icon-badge user-pill-avatar" aria-hidden="true">
+                      {person.name.slice(0, 1).toUpperCase()}
+                    </span>
                     <span>{person.name}</span>
                   </button>
                 );
@@ -2207,13 +2408,30 @@ export default function App() {
             </div>
           </article>
         </Panel>
+        <Panel variant="full" borderWidth={2} className="toolbar">
+          <div className="month-controls">
+            <button type="button" onClick={() => shiftMonth(-1)}>
+              Prev
+            </button>
+            <p>{monthLabel}</p>
+            <button type="button" onClick={() => shiftMonth(1)}>
+              Next
+            </button>
+          </div>
+        </Panel>
 
-        <Panel variant="full" borderWidth={2} className="calendar-panel">
+        <Panel
+          variant="full"
+          borderWidth={2}
+          className="calendar-panel"
+          onTouchStart={onCalendarTouchStart}
+          onTouchEnd={onCalendarTouchEnd}
+        >
           <div className="weekday-row">
             {WEEK_DAYS.map((day) => (
-              <div key={day} className="weekday-cell">
+              <Panel key={day} variant="header" borderWidth={1} className="weekday-cell">
                 {day}
-              </div>
+              </Panel>
             ))}
           </div>
           <div className="calendar-grid">
@@ -2304,11 +2522,14 @@ export default function App() {
                       return <span className={`day-status-pill ${meta?.swatchClass ?? "day-status-none"}`}>{meta?.short ?? "No plan"}</span>;
                     })()}
                     <div className="day-plan-list">
-                      {getPlansForDay(toKeyDate(dayModalDate), selectedPerson.id).length > 0 ? (
-                        getPlansForDay(toKeyDate(dayModalDate), selectedPerson.id).map((plan) => (
+                      {getParticipantPlansForDay(toKeyDate(dayModalDate), selectedPerson.id).length > 0 ? (
+                        getParticipantPlansForDay(toKeyDate(dayModalDate), selectedPerson.id).map((plan) => (
                           <div key={plan.id} className="day-plan-item" style={getPlanPillStyle(plan, selectedPerson.color)}>
                             <strong>{plan.name}</strong>
                             <span>{formatPlanWhen(plan)}</span>
+                            <span>{getPlanParticipationStatus(plan, selectedPerson.id)}</span>
+                            {plan.location ? <span>Location: {plan.location}</span> : null}
+                            {plan.summary ? <span>{plan.summary}</span> : null}
                             <div className="plan-item-actions">
                               <Button type="button" variant="ghost" className="plan-icon-btn" onClick={() => openEditPlanModal(plan)} title="Edit plan">
                                 <FaEdit />
@@ -2335,11 +2556,14 @@ export default function App() {
                         <p>Friend</p>
                         <span className={`day-status-pill ${meta?.swatchClass ?? "day-status-none"}`}>{meta?.short ?? "No plan"}</span>
                         <div className="day-plan-list">
-                          {getPlansForDay(toKeyDate(dayModalDate), person.id).length > 0 ? (
-                            getPlansForDay(toKeyDate(dayModalDate), person.id).map((plan) => (
+                          {getParticipantPlansForDay(toKeyDate(dayModalDate), person.id).length > 0 ? (
+                            getParticipantPlansForDay(toKeyDate(dayModalDate), person.id).map((plan) => (
                               <div key={plan.id} className="day-plan-item" style={getPlanPillStyle(plan, person.color)}>
                                 <strong>{plan.name}</strong>
                                 <span>{formatPlanWhen(plan)}</span>
+                                <span>{getPlanParticipationStatus(plan, person.id)}</span>
+                                {plan.location ? <span>Location: {plan.location}</span> : null}
+                                {plan.summary ? <span>{plan.summary}</span> : null}
                                 <div className="plan-item-actions">
                                   <Button type="button" variant="ghost" className="plan-icon-btn" onClick={() => openEditPlanModal(plan)} title="Edit plan">
                                     <FaEdit />
@@ -2570,13 +2794,31 @@ export default function App() {
                   placeholder="Plan name"
                 />
               </label>
+              <label>
+                Location (Optional)
+                <Input
+                  type="text"
+                  value={planLocation}
+                  onChange={(event) => setPlanLocation(event.target.value)}
+                  placeholder="Location"
+                />
+              </label>
+              <label>
+                Summary (Optional)
+                <Input
+                  type="text"
+                  value={planSummary}
+                  onChange={(event) => setPlanSummary(event.target.value)}
+                  placeholder="Plan summary"
+                />
+              </label>
               <div className="plan-calendar-row">
                 <Dropdown
                   variant="bookmark"
                   label="Groups"
                   layout="row"
                   value={planTargetGroupIds[0] ?? ""}
-                  triggerLabel={planTargetLabel(planTargetGroupIds)}
+                  triggerLabel={planTargetLabel(planTargetGroupIds, planIsPrivate)}
                   placeholder="Choose groups"
                   sections={planCalendarSections}
                   onChange={(value) =>
@@ -2585,6 +2827,7 @@ export default function App() {
                     )
                   }
                   emptyLabel="No groups available."
+                  disabled={planIsPrivate}
                 />
                 <div className="plan-group-chips">
                   {planTargetGroupIds.map((groupId) => {
@@ -2602,6 +2845,53 @@ export default function App() {
                   })}
                 </div>
               </div>
+              <div className="plan-date-row">
+                <Toggle
+                  variant="checkbox"
+                  checked={planIsPrivate}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setPlanIsPrivate(checked);
+                    if (checked) {
+                      setPlanTargetGroupIds([]);
+                      setPlanCustomizeMembers(false);
+                      setPlanExcludedPersonIds([]);
+                    }
+                  }}
+                  label="Private plan"
+                />
+                {planCanCustomizeMembers ? (
+                  <Toggle
+                    variant="checkbox"
+                    checked={planCustomizeMembers}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setPlanCustomizeMembers(checked);
+                      if (!checked) setPlanExcludedPersonIds([]);
+                    }}
+                    label="Customize group sharing"
+                  />
+                ) : null}
+              </div>
+              {planCustomizeMembers && !planIsPrivate ? (
+                <fieldset className="plan-invite-list">
+                  <legend>Hide From Specific Group Members</legend>
+                  {planInvitePeople.filter((person) => planSelectedGroupMemberIds.includes(person.id)).map((person) => (
+                    <Toggle
+                      key={`exclude-${person.id}`}
+                      variant="switch"
+                      className="plan-invite-item"
+                      checked={planExcludedPersonIds.includes(person.id)}
+                      onChange={() =>
+                        setPlanExcludedPersonIds((current) =>
+                          current.includes(person.id) ? current.filter((id) => id !== person.id) : [...current, person.id]
+                        )
+                      }
+                      label={person.name}
+                    />
+                  ))}
+                </fieldset>
+              ) : null}
               <div className="plan-date-row">
                 <div className="plan-date-grid">
                   <label>
@@ -2708,6 +2998,7 @@ export default function App() {
                       className="plan-invite-item"
                       checked={planInvitedIds.includes(person.id)}
                       onChange={() => togglePlanInvite(person.id)}
+                      disabled={planIsPrivate}
                       label={person.name}
                     />
                   ))
@@ -2801,7 +3092,9 @@ export default function App() {
                         {plan.fromDate} to {plan.toDate}
                         {plan.allDay ? " (All day)" : `, ${plan.fromTime} to ${plan.toTime}`}
                       </p>
-                      <p>Groups: {planTargetLabel(plan.targetGroupIds)}</p>
+                      {plan.location ? <p>Location: {plan.location}</p> : null}
+                      {plan.summary ? <p>Summary: {plan.summary}</p> : null}
+                      <p>Visibility: {planTargetLabel(plan.targetGroupIds, plan.isPrivate)}</p>
                       <p>Invited: {invited.length > 0 ? invited.join(", ") : "No invites"}</p>
                       <div className="plan-item-actions">
                         <Button type="button" variant="ghost" className="plan-icon-btn" onClick={() => openEditPlanModal(plan)} title="Edit plan">
@@ -2930,22 +3223,27 @@ export default function App() {
         </Modal>
         <Modal isOpen={notificationsOpen} title="Notifications" subtitle="Invites and activity" size="wide" onClose={() => setNotificationsOpen(false)}>
           <div className="ef-modal-form">
+            {inviteActionMessage ? <p className="cloud-status">{inviteActionMessage}</p> : null}
             <div className="plans-list">
               {incomingPlanInvites.length > 0 ? (
                 incomingPlanInvites.map((invite) => {
                   const relatedPlan = allPlans.find((plan) => plan.id === invite.plan_id);
+                  const inviteStatus = normalizeInviteStatus(invite.status);
                   return (
                     <Panel key={invite.id} variant="card" borderWidth={1} className="plan-list-item prefs-section">
                       <h3>Plan Invite</h3>
                       <p>{relatedPlan ? relatedPlan.name : invite.plan_id}</p>
-                      <p>Status: {invite.status}</p>
-                      {invite.status === "pending" ? (
+                      <p>Status: {inviteStatus === "going" ? "Going" : inviteStatus === "maybe" ? "Maybe" : inviteStatus === "cant" ? "Can't" : "Pending"}</p>
+                      {inviteStatus === "pending" ? (
                         <div className="plan-item-actions">
-                          <Button type="button" variant="primary" onClick={() => void handleInviteResponse(invite.id, "accepted")}>
-                            Accept
+                          <Button type="button" variant="primary" onClick={() => void handleInviteResponse(invite.id, "going")}>
+                            Going
                           </Button>
-                          <Button type="button" variant="delete" onClick={() => void handleInviteResponse(invite.id, "rejected")}>
-                            Reject
+                          <Button type="button" variant="ghost" onClick={() => void handleInviteResponse(invite.id, "maybe")}>
+                            Maybe
+                          </Button>
+                          <Button type="button" variant="delete" onClick={() => void handleInviteResponse(invite.id, "cant")}>
+                            Can't
                           </Button>
                         </div>
                       ) : null}
@@ -3068,5 +3366,6 @@ export default function App() {
     </div>
   );
 }
+
 
 

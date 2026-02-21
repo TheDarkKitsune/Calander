@@ -435,7 +435,9 @@ body,
 
 .main-content {
   padding: 26px clamp(14px, 2.8vw, 38px) 126px;
-  display: grid;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
 }
 
@@ -466,10 +468,16 @@ body,
 }
 
 .planner-footer .ef-footer-actions {
+  --footer-side-size: 56px;
+  --footer-center-size: 90px;
+  --footer-gap: 14px;
+  --footer-offset-near: calc((var(--footer-center-size) / 2) + var(--footer-gap) + (var(--footer-side-size) / 2));
+  --footer-offset-far: calc((var(--footer-center-size) / 2) + (var(--footer-gap) * 2) + var(--footer-side-size) + (var(--footer-side-size) / 2));
   flex: 1;
   position: relative;
   justify-content: center;
   min-height: 58px;
+  width: calc(var(--footer-center-size) + (var(--footer-side-size) * 4) + (var(--footer-gap) * 4));
 }
 
 .planner-footer .ef-footer-copy {
@@ -479,6 +487,8 @@ body,
 .planner-footer.ef-panel--full {
   padding: 10px 16px;
   border-radius: 18px;
+  width: fit-content;
+  max-width: calc(100vw - 24px);
 }
 
 .planner-footer .create-plan-button {
@@ -498,10 +508,11 @@ body,
 .footer-side-button {
   position: absolute;
   top: 50%;
-  transform: translateY(-50%);
-  width: 46px;
-  min-width: 46px;
-  height: 46px;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: var(--footer-side-size);
+  min-width: var(--footer-side-size);
+  height: var(--footer-side-size);
   padding: 0 !important;
   display: inline-flex;
   align-items: center;
@@ -510,26 +521,26 @@ body,
 }
 
 .footer-side-left {
-  right: calc(50% + 86px);
+  left: calc(50% - var(--footer-offset-near));
 }
 
 .footer-side-right {
-  left: calc(50% + 86px);
+  left: calc(50% + var(--footer-offset-near));
 }
 
 .footer-side-plans {
-  left: calc(50% + 148px);
+  left: calc(50% + var(--footer-offset-far));
 }
 
 .footer-side-notifications {
-  right: calc(50% + 148px);
+  left: calc(50% - var(--footer-offset-far));
 }
 
 .footer-side-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 1rem;
+  font-size: 1.15rem;
   line-height: 1;
 }
 
@@ -606,16 +617,17 @@ body,
 }
 
 .month-controls {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
 }
 
 .month-controls p {
-  margin: 0 6px;
+  margin: 0;
   font-size: 1.1rem;
-  min-width: 170px;
+  min-width: 0;
   text-align: center;
 }
 
@@ -664,11 +676,18 @@ body,
 
 .secondary-pill-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  touch-action: pan-x;
+  padding-bottom: 2px;
 }
 
 .secondary-pill {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -681,6 +700,10 @@ body,
   font-weight: 700;
   cursor: pointer;
   box-shadow: none !important;
+  height: 28px;
+  max-height: 28px;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .secondary-pill.is-person {
@@ -703,6 +726,12 @@ body,
 .group-pill-icon {
   font-size: 0.92rem;
   line-height: 1;
+}
+
+.user-pill-avatar {
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .status-toolbar {
@@ -797,46 +826,45 @@ body,
   border-radius: 16px;
   padding: 10px;
   display: grid;
-  gap: 8px;
+  grid-template-rows: auto minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .weekday-row {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 0;
-  border: 1px solid var(--calendar-line);
   border-radius: 1px;
   overflow: hidden;
 }
 
 .weekday-cell {
-  border: 0;
-  border-left: 1px solid var(--calendar-line);
   border-radius: 0;
-  background: rgba(245, 248, 255, 0.92);
-  color: #121826;
-  text-align: center;
-  padding: 7px 4px;
-  font-weight: 700;
 }
 
 .weekday-cell:first-child {
-  border-left: 0;
+  border-top-left-radius: var(--pill-radius);
 }
-
+.weekday-cell:last-child {
+  border-top-right-radius: var(--pill-radius);
+}
 .calendar-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 0;
-  border: 1px solid var(--calendar-line);
-  border-radius: 1px;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--ef-surface), var(--ef-surface)) padding-box,
+    var(--ef-border-gradient) border-box;
+  border-radius: 0 0 var(--pill-radius) var(--pill-radius);
   overflow: hidden;
 }
 
 .day-cell {
   min-height: 106px;
   border-radius: 0 !important;
-  border: 0;
+  border: 0 !important;
   background: var(--calendar-cell-bg);
   color: #edf4ff;
   text-align: left;
@@ -844,18 +872,28 @@ body,
   cursor: pointer;
   display: grid;
   grid-template-rows: auto 1fr auto;
-}
-
-.day-cell:not(:nth-child(7n + 1)) {
-  border-left: 1px solid rgba(255, 255, 255, 0.24);
-}
-
-.day-cell:nth-child(n + 8) {
-  border-top: 2px solid rgba(255, 255, 255, 0.32);
+  position: relative;
 }
 
 .day-cell:disabled {
   cursor: default;
+}
+
+.calendar-grid > button.day-cell {
+  border: 2px solid transparent !important;
+  background:
+    linear-gradient(var(--calendar-cell-bg), var(--calendar-cell-bg)) padding-box,
+    var(--ef-border-gradient) border-box;
+}
+
+.calendar-grid > :nth-last-child(7),
+.calendar-grid > :nth-child(36) {
+  border-bottom-left-radius: var(--pill-radius) !important;
+}
+
+.calendar-grid > :last-child,
+.calendar-grid > :nth-child(42) {
+  border-bottom-right-radius: var(--pill-radius) !important;
 }
 
 .day-cell.is-other-month {
@@ -864,7 +902,7 @@ body,
 
 .day-cell-placeholder {
   pointer-events: none;
-  background: transparent;
+  background: color-mix(in oklab, var(--calendar-cell-bg) 92%, black 8%);
 }
 
 .day-cell.is-today {
@@ -1161,8 +1199,14 @@ body,
 }
 
 .plan-create-form {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
+  min-height: 100%;
+}
+
+.plan-create-form .ef-modal-actions {
+  margin-top: auto;
 }
 
 .plan-calendar-row {
@@ -1339,6 +1383,25 @@ body,
 }
 
 @media (max-width: 760px) {
+  body,
+  #root,
+  .calendar-app {
+    background: var(--ef-surface);
+  }
+
+  .main-content {
+    padding: 0px clamp(14px, 2.8vw, 38px) 85px;
+    gap: 0;
+  }
+
+  .main-content > .ef-main-header + .secondary-toolbar {
+    margin-top: 0 !important;
+  }
+
+  .toolbar {
+    display: flex;
+  }
+
   .topbar {
     grid-template-columns: auto 1fr;
   }
@@ -1371,6 +1434,32 @@ body,
 
   .secondary-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .toolbar,
+  .secondary-toolbar {
+    width: calc(100% + 28px);
+    margin-left: -14px;
+    margin-right: -14px;
+    border-radius: 0;
+    border: 0;
+    border-bottom: 2px solid var(--line);
+  }
+
+  .month-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .month-controls button {
+    display: none;
+  }
+
+  .calendar-panel {
+    width: calc(100% + 28px);
+    margin-left: -14px;
+    margin-right: -14px;
+    border-radius: 0;
+    border: 0;
   }
 
   .cloud-actions {
@@ -1413,7 +1502,9 @@ body,
 
   .planner-footer .ef-footer-actions {
     justify-content: center;
-    min-height: 74px;
+    min-height: 58px;
+    width: 100%;
+    max-width: none;
   }
 
   .planner-footer .create-plan-button {
@@ -1422,24 +1513,21 @@ body,
     transform: translate(-50%, -50%);
   }
 
-  .footer-side-left {
-    right: calc(50% + 66px);
-  }
-
-  .footer-side-right {
-    left: calc(50% + 66px);
-  }
-
-  .footer-side-plans {
-    left: calc(50% + 124px);
-  }
-
-  .footer-side-notifications {
-    right: calc(50% + 124px);
-  }
-
   .planner-footer.ef-floating-footer {
-    bottom: max(20px, env(safe-area-inset-bottom));
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    transform: none;
+    margin: 0;
+    border-radius: 18px 18px 0 0;
+  }
+
+  .planner-footer.ef-panel--full {
+    border-radius: 18px 18px 0 0;
+    width: 100%;
+    max-width: none;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
 
 

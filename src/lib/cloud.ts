@@ -352,6 +352,8 @@ export type SharedPlanPayload = {
   id: string;
   owner_id: string;
   name: string;
+  summary?: string | null;
+  location?: string | null;
   from_date: string;
   to_date: string;
   all_day: boolean;
@@ -374,9 +376,14 @@ export type SharedInvitePayload = {
   plan_id: string;
   inviter_id: string;
   invitee_id: string;
-  status: "pending" | "accepted" | "rejected";
+  status: "pending" | "going" | "maybe" | "cant" | "accepted" | "rejected";
   created_at: string | null;
   updated_at: string | null;
+};
+export type OwnedPlanInviteStatus = {
+  plan_id: string;
+  invitee_id: string;
+  status: "pending" | "going" | "maybe" | "cant" | "accepted" | "rejected";
 };
 
 export type CloudNotification = {
@@ -475,9 +482,9 @@ export const listVisibleSharedPlans = async (userId: string) => {
 
   const { data: acceptedInvites, error: inviteError } = await supabase
     .from("calendar_plan_invites")
-    .select("plan_id")
+    .select("plan_id,status")
     .eq("invitee_id", userId)
-    .eq("status", "accepted");
+    .in("status", ["pending", "going", "maybe", "accepted"]);
   if (inviteError) return { plans: [] as SharedPlanPayload[], error: inviteError.message };
 
   const invitedPlanIds = [...new Set((acceptedInvites ?? []).map((row) => (row as { plan_id: string }).plan_id))];
@@ -524,7 +531,23 @@ export const listIncomingPlanInvites = async (userId: string) => {
   return { invites: ((data ?? []) as SharedInvitePayload[]), error: error?.message ?? null };
 };
 
-export const respondToPlanInvite = async (inviteId: string, response: "accepted" | "rejected") => {
+export const listOwnedPlanInvites = async (ownerId: string, planIds: string[] = []) => {
+  if (!supabase) {
+    return { invites: [] as OwnedPlanInviteStatus[], error: "Cloud is not configured." };
+  }
+  let query = supabase
+    .from("calendar_plan_invites")
+    .select("plan_id,invitee_id,status")
+    .eq("inviter_id", ownerId);
+  const uniquePlanIds = [...new Set(planIds.filter(Boolean))];
+  if (uniquePlanIds.length > 0) {
+    query = query.in("plan_id", uniquePlanIds);
+  }
+  const { data, error } = await query;
+  return { invites: ((data ?? []) as OwnedPlanInviteStatus[]), error: error?.message ?? null };
+};
+
+export const respondToPlanInvite = async (inviteId: string, response: "going" | "maybe" | "cant") => {
   if (!supabase) return { error: "Cloud is not configured." };
   const { error } = await supabase
     .from("calendar_plan_invites")
@@ -562,7 +585,6 @@ export const onCalendarRealtimeChange = (userId: string, onChange: () => void) =
     .on("postgres_changes", { event: "*", schema: "public", table: "calendar_shared_plans" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "calendar_plan_invites", filter: `invitee_id=eq.${userId}` }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "calendar_notifications", filter: `user_id=eq.${userId}` }, onChange)
-    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_shared_groups" }, onChange)
     .subscribe();
 
   return () => {
