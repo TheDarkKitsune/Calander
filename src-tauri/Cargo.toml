@@ -1,0 +1,17 @@
+[package]
+name = "enderfall-calander"
+version = "0.1.0"
+description = "Enderfall Calander"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.5", features = [ "fs-write-file", "path-all", "fs-read-file", "fs-create-dir", "shell-open", "icon-ico" ] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-single-instance = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v1", package = "tauri-plugin-single-instance" }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

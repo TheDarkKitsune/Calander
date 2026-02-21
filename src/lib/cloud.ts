@@ -11,14 +11,39 @@ export const cloudTable = (import.meta.env.VITE_SUPABASE_CALENDAR_TABLE ?? "holi
 export const isCloudConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
 const createSupabaseClient = () =>
-  createClient(supabaseUrl, supabaseAnonKey, {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
-      storageKey: "calander-auth",
-    },
-  });
+  {
+    if (typeof window !== "undefined") {
+      try {
+        const projectRef = (() => {
+          try {
+            const url = new URL(supabaseUrl);
+            return url.hostname.split(".")[0] ?? "";
+          } catch {
+            return "";
+          }
+        })();
+        const legacyKey = "calander-auth";
+        const defaultKey = projectRef ? `sb-${projectRef}-auth-token` : "";
+        if (defaultKey) {
+          const legacyValue = window.localStorage.getItem(legacyKey);
+          const defaultValue = window.localStorage.getItem(defaultKey);
+          if (legacyValue && !defaultValue) {
+            window.localStorage.setItem(defaultKey, legacyValue);
+          }
+        }
+      } catch {
+        // ignore storage migration errors
+      }
+    }
+
+    return createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    });
+  };
 
 const supabase: SupabaseClient | null = isCloudConfigured
   ? (globalThis.__calanderSupabase ?? (globalThis.__calanderSupabase = createSupabaseClient()))
@@ -38,10 +63,134 @@ export type CloudMember = {
   created_at: string | null;
 };
 
+export type CloudFriend = {
+  friendship_id: string;
+  user_id: string;
+  username: string;
+};
+
 export const getCloudUser = async () => {
   if (!supabase) return null;
   const { data } = await supabase.auth.getUser();
   return data.user ?? null;
+};
+
+export const listCloudFriends = async (userId: string) => {
+  if (!supabase) {
+    return { friends: [] as CloudFriend[], error: "Cloud is not configured." };
+  }
+  try {
+    const { data: rows, error: rowsError } = await supabase
+      .from("friendships")
+      .select("id, user_id, friend_id, status")
+      .or(`user_id.eq.${userId},friend_id.eq.${userId}`)
+      .eq("status", "accepted");
+    if (rowsError) return { friends: [] as CloudFriend[], error: rowsError.message };
+
+    const acceptedRows = (rows ?? []) as Array<{
+      id: string;
+      user_id: string;
+      friend_id: string;
+      status?: string | null;
+    }>;
+
+    const friendIds = [...new Set(
+      acceptedRows.map((row) => (row.user_id === userId ? row.friend_id : row.user_id)).filter(Boolean)
+    )];
+    if (friendIds.length === 0) {
+      return { friends: [] as CloudFriend[], error: null as string | null };
+    }
+
+    const { data: profiles, error: profilesError } = await supabase
+      .from("profiles")
+      .select("id, username")
+      .in("id", friendIds);
+    if (profilesError) {
+      return { friends: [] as CloudFriend[], error: profilesError.message };
+    }
+    const usernameById = new Map(
+      ((profiles ?? []) as Array<{ id: string; username?: string | null }>).map((profile) => [
+        profile.id,
+        profile.username?.trim() || "Friend",
+      ])
+    );
+
+    const friends: CloudFriend[] = [];
+    const used = new Set<string>();
+    for (const row of acceptedRows) {
+      const friendId = row.user_id === userId ? row.friend_id : row.user_id;
+      if (!friendId || used.has(friendId)) continue;
+      friends.push({
+        friendship_id: row.id,
+        user_id: friendId,
+        username: usernameById.get(friendId) ?? "Friend",
+      });
+      used.add(friendId);
+    }
+    return { friends, error: null as string | null };
+  } catch (error) {
+    return { friends: [] as CloudFriend[], error: error instanceof Error ? error.message : "Failed to load friends." };
+  }
+};
+
+export const sendCloudFriendRequestByUsername = async (userId: string, username: string) => {
+  if (!supabase) {
+    return { error: "Cloud is not configured." };
+  }
+  const normalized = username.trim();
+  if (!normalized) {
+    return { error: "Enter a username." };
+  }
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("id, username")
+    .ilike("username", normalized)
+    .maybeSingle<{ id: string; username: string }>();
+  if (profileError) {
+    return { error: profileError.message };
+  }
+  if (!profile) {
+    return { error: "User not found." };
+  }
+  if (profile.id === userId) {
+    return { error: "You cannot friend yourself." };
+  }
+
+  const { data: existing, error: existingError } = await supabase
+    .from("friendships")
+    .select("id")
+    .or(`and(user_id.eq.${userId},friend_id.eq.${profile.id}),and(user_id.eq.${profile.id},friend_id.eq.${userId})`)
+    .limit(1);
+  if (existingError) {
+    return { error: existingError.message };
+  }
+  if ((existing ?? []).length > 0) {
+    return { error: "Friendship or request already exists." };
+  }
+
+  const { error } = await supabase.from("friendships").insert({
+    user_id: userId,
+    friend_id: profile.id,
+    status: "pending",
+  });
+  if (error) return { error: error.message };
+
+  const { error: notificationError } = await supabase.from("calendar_notifications").insert({
+    user_id: profile.id,
+    type: "friend_request",
+    title: "Friend request",
+    body: `${normalized} sent you a friend request.`,
+    payload: { requester_id: userId },
+  });
+  return { error: notificationError?.message ?? null };
+};
+
+export const removeCloudFriend = async (friendshipId: string) => {
+  if (!supabase) {
+    return { error: "Cloud is not configured." };
+  }
+  const { error } = await supabase.from("friendships").delete().eq("id", friendshipId);
+  return { error: error?.message ?? null };
 };
 
 export const onCloudAuthStateChange = (handler: (user: User | null) => void) => {
@@ -189,4 +338,234 @@ export const writeCloudRoom = async (roomId: string, payload: unknown) => {
   );
 
   return { error: error?.message ?? null };
+};
+
+export type SharedGroupPayload = {
+  owner_id: string;
+  group_key: string;
+  name: string;
+  icon: string;
+  color: string;
+};
+
+export type SharedPlanPayload = {
+  id: string;
+  owner_id: string;
+  name: string;
+  from_date: string;
+  to_date: string;
+  all_day: boolean;
+  from_time: string;
+  to_time: string;
+  target_group_ids: string[];
+  invited_ids: string[];
+};
+
+export type SharedGroupRecord = {
+  owner_id: string;
+  group_key: string;
+  name: string;
+  icon: string;
+  color: string;
+};
+
+export type SharedInvitePayload = {
+  id: string;
+  plan_id: string;
+  inviter_id: string;
+  invitee_id: string;
+  status: "pending" | "accepted" | "rejected";
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type CloudNotification = {
+  id: string;
+  user_id: string;
+  type: string;
+  title: string;
+  body: string;
+  payload: Record<string, unknown>;
+  is_read: boolean;
+  created_at: string;
+};
+
+export const upsertSharedGroups = async (ownerId: string, groups: SharedGroupPayload[]) => {
+  if (!supabase) return { error: "Cloud is not configured." };
+  if (groups.length === 0) return { error: null as string | null };
+  const payload = groups.map((group) => ({ ...group, owner_id: ownerId }));
+  const { error } = await supabase
+    .from("calendar_shared_groups")
+    .upsert(payload, { onConflict: "owner_id,group_key" });
+  return { error: error?.message ?? null };
+};
+
+export const upsertSharedPlans = async (ownerId: string, plans: SharedPlanPayload[]) => {
+  if (!supabase) return { error: "Cloud is not configured." };
+  const payload = plans.map((plan) => ({ ...plan, owner_id: ownerId }));
+  const { error } = await supabase.from("calendar_shared_plans").upsert(payload, { onConflict: "id" });
+  return { error: error?.message ?? null };
+};
+
+export const deleteSharedPlan = async (ownerId: string, planId: string) => {
+  if (!supabase) return { error: "Cloud is not configured." };
+  const { error } = await supabase
+    .from("calendar_shared_plans")
+    .delete()
+    .eq("id", planId)
+    .eq("owner_id", ownerId);
+  return { error: error?.message ?? null };
+};
+
+export const syncSharedPlanInvites = async (ownerId: string, planId: string, inviteeIds: string[]) => {
+  if (!supabase) return { error: "Cloud is not configured." };
+
+  const { data: existingRows, error: existingError } = await supabase
+    .from("calendar_plan_invites")
+    .select("id, invitee_id, status")
+    .eq("plan_id", planId)
+    .eq("inviter_id", ownerId);
+  if (existingError) return { error: existingError.message };
+
+  const existing = (existingRows ?? []) as Array<{ id: string; invitee_id: string; status: string }>;
+  const existingByInvitee = new Map(existing.map((row) => [row.invitee_id, row]));
+  const desiredSet = new Set(inviteeIds);
+
+  const toInsert = inviteeIds.filter((id) => !existingByInvitee.has(id));
+  const toDelete = existing.filter((row) => !desiredSet.has(row.invitee_id)).map((row) => row.id);
+
+  if (toInsert.length > 0) {
+    const rows = toInsert.map((inviteeId) => ({
+      plan_id: planId,
+      inviter_id: ownerId,
+      invitee_id: inviteeId,
+      status: "pending",
+    }));
+    const { error } = await supabase.from("calendar_plan_invites").insert(rows);
+    if (error) return { error: error.message };
+
+    const notifications = toInsert.map((inviteeId) => ({
+      user_id: inviteeId,
+      type: "plan_invite",
+      title: "New plan invite",
+      body: "You have been invited to a plan.",
+      payload: { plan_id: planId, inviter_id: ownerId },
+    }));
+    const { error: notificationError } = await supabase.from("calendar_notifications").insert(notifications);
+    if (notificationError) return { error: notificationError.message };
+  }
+
+  if (toDelete.length > 0) {
+    const { error } = await supabase.from("calendar_plan_invites").delete().in("id", toDelete);
+    if (error) return { error: error.message };
+  }
+
+  return { error: null as string | null };
+};
+
+export const listVisibleSharedPlans = async (userId: string) => {
+  if (!supabase) {
+    return { plans: [] as SharedPlanPayload[], error: "Cloud is not configured." };
+  }
+  const { data: ownedRows, error: ownedError } = await supabase
+    .from("calendar_shared_plans")
+    .select("*")
+    .eq("owner_id", userId);
+  if (ownedError) return { plans: [] as SharedPlanPayload[], error: ownedError.message };
+
+  const { data: acceptedInvites, error: inviteError } = await supabase
+    .from("calendar_plan_invites")
+    .select("plan_id")
+    .eq("invitee_id", userId)
+    .eq("status", "accepted");
+  if (inviteError) return { plans: [] as SharedPlanPayload[], error: inviteError.message };
+
+  const invitedPlanIds = [...new Set((acceptedInvites ?? []).map((row) => (row as { plan_id: string }).plan_id))];
+  let invitedRows: SharedPlanPayload[] = [];
+  if (invitedPlanIds.length > 0) {
+    const { data, error } = await supabase
+      .from("calendar_shared_plans")
+      .select("*")
+      .in("id", invitedPlanIds);
+    if (error) return { plans: [] as SharedPlanPayload[], error: error.message };
+    invitedRows = (data ?? []) as SharedPlanPayload[];
+  }
+
+  const merged = [...((ownedRows ?? []) as SharedPlanPayload[]), ...invitedRows];
+  const byId = new Map<string, SharedPlanPayload>();
+  merged.forEach((plan) => byId.set(plan.id, plan));
+  return { plans: [...byId.values()], error: null as string | null };
+};
+
+export const listSharedGroupsForOwners = async (ownerIds: string[]) => {
+  if (!supabase) {
+    return { groups: [] as SharedGroupRecord[], error: "Cloud is not configured." };
+  }
+  const uniqueOwners = [...new Set(ownerIds.filter(Boolean))];
+  if (uniqueOwners.length === 0) {
+    return { groups: [] as SharedGroupRecord[], error: null as string | null };
+  }
+  const { data, error } = await supabase
+    .from("calendar_shared_groups")
+    .select("owner_id,group_key,name,icon,color")
+    .in("owner_id", uniqueOwners);
+  return { groups: (data ?? []) as SharedGroupRecord[], error: error?.message ?? null };
+};
+
+export const listIncomingPlanInvites = async (userId: string) => {
+  if (!supabase) {
+    return { invites: [] as SharedInvitePayload[], error: "Cloud is not configured." };
+  }
+  const { data, error } = await supabase
+    .from("calendar_plan_invites")
+    .select("*")
+    .eq("invitee_id", userId)
+    .order("created_at", { ascending: false });
+  return { invites: ((data ?? []) as SharedInvitePayload[]), error: error?.message ?? null };
+};
+
+export const respondToPlanInvite = async (inviteId: string, response: "accepted" | "rejected") => {
+  if (!supabase) return { error: "Cloud is not configured." };
+  const { error } = await supabase
+    .from("calendar_plan_invites")
+    .update({ status: response })
+    .eq("id", inviteId);
+  return { error: error?.message ?? null };
+};
+
+export const listNotifications = async (userId: string) => {
+  if (!supabase) {
+    return { notifications: [] as CloudNotification[], error: "Cloud is not configured." };
+  }
+  const { data, error } = await supabase
+    .from("calendar_notifications")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(200);
+  return { notifications: (data ?? []) as CloudNotification[], error: error?.message ?? null };
+};
+
+export const markNotificationRead = async (notificationId: string) => {
+  if (!supabase) return { error: "Cloud is not configured." };
+  const { error } = await supabase
+    .from("calendar_notifications")
+    .update({ is_read: true })
+    .eq("id", notificationId);
+  return { error: error?.message ?? null };
+};
+
+export const onCalendarRealtimeChange = (userId: string, onChange: () => void) => {
+  if (!supabase) return () => undefined;
+  const channel = supabase
+    .channel(`calendar-realtime-${userId}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_shared_plans" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_plan_invites", filter: `invitee_id=eq.${userId}` }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_notifications", filter: `user_id=eq.${userId}` }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_shared_groups" }, onChange)
+    .subscribe();
+
+  return () => {
+    void supabase.removeChannel(channel);
+  };
 };
