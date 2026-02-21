@@ -498,13 +498,17 @@ export const syncSharedPlanInvites = async (ownerId: string, planId: string, inv
       status: "pending",
     }));
     const { error } = await supabase.from("calendar_plan_invites").insert(rows);
+    const code = ((error as { code?: string } | null)?.code ?? "").toLowerCase();
     const message = (error?.message ?? "").toLowerCase();
     const details = ((error as { details?: string } | null)?.details ?? "").toLowerCase();
     const duplicateConflict =
       !!error &&
-      (message.includes("duplicate key") ||
+      (code === "23505" ||
+        message.includes("duplicate key") ||
+        message.includes("conflict") ||
         message.includes("already exists") ||
         details.includes("duplicate key") ||
+        details.includes("conflict") ||
         details.includes("already exists"));
     if (error && !duplicateConflict) return { error: error.message };
 

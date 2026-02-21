@@ -2092,6 +2092,16 @@ export default function App() {
   }, [socialUserId, refreshNotifications, refreshOwnedPlanInvites, refreshSharedPlans]);
 
   useEffect(() => {
+    if (!socialUserId || !isCloudConfigured) return;
+    const interval = window.setInterval(() => {
+      void refreshSharedPlans();
+      void refreshNotifications();
+      void refreshOwnedPlanInvites();
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [socialUserId, refreshNotifications, refreshOwnedPlanInvites, refreshSharedPlans]);
+
+  useEffect(() => {
     if (!socialUserId || !isCloudConfigured) {
       sharedPlanIdsRef.current = [];
       lastSharedSyncSignatureRef.current = "";
