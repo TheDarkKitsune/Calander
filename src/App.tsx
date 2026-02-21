@@ -1281,6 +1281,17 @@ export default function App() {
     }
     return statusMap;
   }, [ownedPlanInvites]);
+  const incomingInviteStatusByPlan = useMemo(() => {
+    const map = new Map<string, "pending" | InviteResponse>();
+    for (const invite of incomingPlanInvites) {
+      map.set(invite.plan_id, normalizeInviteStatus(invite.status));
+    }
+    return map;
+  }, [incomingPlanInvites]);
+  const personColorById = useMemo(
+    () => new Map(store.people.map((person) => [person.id, person.color] as const)),
+    [store.people]
+  );
   const allPlans = useMemo(() => {
     const byId = new Map<string, Plan>();
     plans.forEach((plan) => byId.set(plan.id, plan));
@@ -1302,9 +1313,14 @@ export default function App() {
   const planAppliesToPerson = useCallback(
     (plan: Plan, personId: string) => {
       if (plan.ownerId === personId) return true;
-      return plan.invitedIds.includes(personId);
+      if (plan.invitedIds.includes(personId)) return true;
+      if (personId === selfPersonId) {
+        const incomingStatus = incomingInviteStatusByPlan.get(plan.id);
+        return incomingStatus === "pending" || incomingStatus === "going" || incomingStatus === "maybe";
+      }
+      return false;
     },
-    []
+    [incomingInviteStatusByPlan, selfPersonId]
   );
   const getPlansForDay = useCallback(
     (dateKey: string, personId: string) =>
@@ -2158,7 +2174,19 @@ export default function App() {
         .sort(),
     }));
     const sortedPayload = [...planPayload].sort((a, b) => a.id.localeCompare(b.id));
-    const syncSignature = JSON.stringify(sortedPayload);
+    const inviteSyncPayload = ownedSharedPlans
+      .map((plan) => ({
+        id: plan.id,
+        invitee_ids: plan.invitedIds
+          .filter((id) => id && id !== socialUserId && isUuid(id))
+          .filter((id) => !plan.excludedPersonIds.includes(id))
+          .sort(),
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const syncSignature = JSON.stringify({
+      shared: sortedPayload,
+      invites: inviteSyncPayload,
+    });
     if (syncSignature === lastSharedSyncSignatureRef.current) {
       return;
     }
@@ -2173,11 +2201,11 @@ export default function App() {
       }
 
       for (const plan of ownedSharedPlans) {
-        const shareRecipients = shareRecipientIdsByPlan.get(plan.id) ?? [];
+        const participantInvitees = inviteSyncPayload.find((entry) => entry.id === plan.id)?.invitee_ids ?? [];
         const inviteResult = await syncSharedPlanInvites(
           socialUserId,
           plan.id,
-          shareRecipients.filter((id) => id && id !== socialUserId && isUuid(id))
+          participantInvitees
         );
         if (inviteResult.error) {
           setSyncState("error");
@@ -2597,7 +2625,6 @@ export default function App() {
               const status = selectedPerson ? store.entries[entryKey] ?? "none" : "none";
               const dayPlans = selectedPerson ? getCalendarCellPlansForDay(keyDate, selectedPerson.id) : [];
               const laidOutDayPlans = visiblePlanLanesByDay.get(keyDate) ?? [];
-              const planBarColor = selectedPerson?.color ?? "#20c9a6";
               const visiblePlanSegments = laidOutDayPlans.slice(0, 3).map(({ plan, lane }) => {
                 const startsToday = keyDate === plan.fromDate;
                 const endsToday = keyDate === plan.toDate;
@@ -2608,11 +2635,12 @@ export default function App() {
                 const hasNext = isDateInRange(shiftKeyDate(keyDate, 1), plan.fromDate, plan.toDate);
                 const firstGroupId = plan.targetGroupIds[0];
                 const groupIcon = firstGroupId ? store.groups.find((group) => group.id === firstGroupId)?.icon ?? null : null;
+                const planOwnerColor = personColorById.get(plan.ownerId) ?? selectedPerson?.color ?? "#20c9a6";
                 const segmentStyle: CSSProperties = {
                   left: `${startPct}%`,
                   right: `${100 - endPct}%`,
                   top: `${lane * 17}px`,
-                  ...getPlanPillStyle(plan, planBarColor),
+                  ...getPlanPillStyle(plan, planOwnerColor),
                 };
                 return { plan, hasPrev, hasNext, segmentStyle, groupIcon };
               });
@@ -2715,7 +2743,7 @@ export default function App() {
                                         height: `${Math.max(2, ((end - start) / (24 * 60)) * 100)}%`,
                                         ["--lane-index" as string]: lane,
                                         ["--lane-count" as string]: laneCount,
-                                        ...getPlanPillStyle(plan, person.color),
+                                        ...getPlanPillStyle(plan, personColorById.get(plan.ownerId) ?? person.color),
                                       }}
                                       title={`${plan.name} - ${getPlanParticipationStatus(plan, person.id)}`}
                                     >

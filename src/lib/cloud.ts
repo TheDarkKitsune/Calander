@@ -48,7 +48,9 @@ const createSupabaseClient = () =>
 const supabase: SupabaseClient | null = isCloudConfigured
   ? (globalThis.__calanderSupabase ?? (globalThis.__calanderSupabase = createSupabaseClient()))
   : null;
-let canWriteCalendarNotifications = true;
+// Notification inserts are frequently blocked by RLS for cross-user writes.
+// Keep invite sync independent from notification writes.
+let canWriteCalendarNotifications = false;
 
 type OverrideTokens = {
   access_token?: string;
@@ -478,17 +480,18 @@ export const syncSharedPlanInvites = async (ownerId: string, planId: string, inv
 
   const { data: existingRows, error: existingError } = await supabase
     .from("calendar_plan_invites")
-    .select("id, invitee_id, status")
-    .eq("plan_id", planId)
-    .eq("inviter_id", ownerId);
+    .select("id, invitee_id, inviter_id, status")
+    .eq("plan_id", planId);
   if (existingError) return { error: existingError.message };
 
-  const existing = (existingRows ?? []) as Array<{ id: string; invitee_id: string; status: string }>;
+  const existing = (existingRows ?? []) as Array<{ id: string; invitee_id: string; inviter_id: string; status: string }>;
   const existingByInvitee = new Map(existing.map((row) => [row.invitee_id, row]));
   const desiredSet = new Set(inviteeIds);
 
   const toInsert = inviteeIds.filter((id) => !existingByInvitee.has(id));
-  const toDelete = existing.filter((row) => !desiredSet.has(row.invitee_id)).map((row) => row.id);
+  const toDelete = existing
+    .filter((row) => row.inviter_id === ownerId && !desiredSet.has(row.invitee_id))
+    .map((row) => row.id);
 
   if (toInsert.length > 0) {
     const rows = toInsert.map((inviteeId) => ({
@@ -497,10 +500,13 @@ export const syncSharedPlanInvites = async (ownerId: string, planId: string, inv
       invitee_id: inviteeId,
       status: "pending",
     }));
-    const { error } = await supabase
-      .from("calendar_plan_invites")
-      .upsert(rows, { onConflict: "plan_id,invitee_id" });
-    if (error) return { error: error.message };
+    const { error } = await supabase.from("calendar_plan_invites").insert(rows);
+    if (error) {
+      const code = ((error as { code?: string } | null)?.code ?? "").toLowerCase();
+      const message = (error.message ?? "").toLowerCase();
+      const isDuplicateConflict = code === "23505" || message.includes("duplicate key") || message.includes("conflict");
+      if (!isDuplicateConflict) return { error: error.message };
+    }
 
     const notifications = toInsert.map((inviteeId) => ({
       user_id: inviteeId,
