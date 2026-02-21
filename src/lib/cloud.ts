@@ -497,20 +497,10 @@ export const syncSharedPlanInvites = async (ownerId: string, planId: string, inv
       invitee_id: inviteeId,
       status: "pending",
     }));
-    const { error } = await supabase.from("calendar_plan_invites").insert(rows);
-    const code = ((error as { code?: string } | null)?.code ?? "").toLowerCase();
-    const message = (error?.message ?? "").toLowerCase();
-    const details = ((error as { details?: string } | null)?.details ?? "").toLowerCase();
-    const duplicateConflict =
-      !!error &&
-      (code === "23505" ||
-        message.includes("duplicate key") ||
-        message.includes("conflict") ||
-        message.includes("already exists") ||
-        details.includes("duplicate key") ||
-        details.includes("conflict") ||
-        details.includes("already exists"));
-    if (error && !duplicateConflict) return { error: error.message };
+    const { error } = await supabase
+      .from("calendar_plan_invites")
+      .upsert(rows, { onConflict: "plan_id,invitee_id" });
+    if (error) return { error: error.message };
 
     const notifications = toInsert.map((inviteeId) => ({
       user_id: inviteeId,

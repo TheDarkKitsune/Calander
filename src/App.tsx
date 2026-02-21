@@ -1301,18 +1301,10 @@ export default function App() {
   );
   const planAppliesToPerson = useCallback(
     (plan: Plan, personId: string) => {
-      if (personId === selfPersonId) return true;
       if (plan.ownerId === personId) return true;
-      if (plan.excludedPersonIds.includes(personId)) return false;
-      if (plan.targetGroupIds.length === 0) {
-        if (plan.isPrivate) return false;
-        return true;
-      }
-      const person = store.people.find((entry) => entry.id === personId);
-      if (!person) return false;
-      return plan.targetGroupIds.some((groupId) => person.groupIds.includes(groupId));
+      return plan.invitedIds.includes(personId);
     },
-    [selfPersonId, store.people]
+    []
   );
   const getPlansForDay = useCallback(
     (dateKey: string, personId: string) =>
@@ -1955,13 +1947,14 @@ export default function App() {
     }
     const normalized: Plan[] = remotePlans.map((plan) => {
       const decodedTargets = decodeSharedTargetGroupIds(Array.isArray(plan.target_group_ids) ? plan.target_group_ids : []);
+      const isOwnedByViewer = plan.owner_id === socialUserId;
       return {
         id: plan.id,
         name: plan.name,
         summary: typeof plan.summary === "string" ? plan.summary : "",
         location: typeof plan.location === "string" ? plan.location : "",
         ownerId: plan.owner_id,
-        targetGroupIds: plan.owner_id === socialUserId ? decodedTargets.targetGroupIds.map((groupId) => normalizeLocalGroupId(groupId)) : [],
+        targetGroupIds: isOwnedByViewer ? decodedTargets.targetGroupIds.map((groupId) => normalizeLocalGroupId(groupId)) : [],
         excludedPersonIds: decodedTargets.excludedPersonIds,
         isPrivate: decodedTargets.isPrivate,
         fromDate: plan.from_date,
@@ -1969,7 +1962,7 @@ export default function App() {
         allDay: Boolean(plan.all_day),
         fromTime: plan.from_time || "09:00",
         toTime: plan.to_time || "17:00",
-        invitedIds: Array.isArray(plan.invited_ids) ? plan.invited_ids : [],
+        invitedIds: isOwnedByViewer && Array.isArray(plan.invited_ids) ? plan.invited_ids : [],
       };
     });
     setSharedPlans(normalized);
