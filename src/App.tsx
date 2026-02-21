@@ -1316,6 +1316,16 @@ export default function App() {
       ),
     [allPlans, isPlanVisibleByGroups, planAppliesToPerson]
   );
+  const getCalendarCellPlansForDay = useCallback(
+    (dateKey: string, personId: string) =>
+      allPlans.filter(
+        (plan) =>
+          isDateInRange(dateKey, plan.fromDate, plan.toDate) &&
+          isPlanVisibleByGroups(plan) &&
+          (personId === selfPersonId || planAppliesToPerson(plan, personId))
+      ),
+    [allPlans, isPlanVisibleByGroups, planAppliesToPerson, selfPersonId]
+  );
   const getPlanPillStyle = useCallback(
     (plan: Plan, personColor: string): CSSProperties => {
       const firstGroupColor = plan.targetGroupIds
@@ -1444,7 +1454,7 @@ export default function App() {
       .filter(
         (plan) =>
           isPlanVisibleByGroups(plan) &&
-          planAppliesToPerson(plan, selectedPerson.id) &&
+          (selectedPerson.id === selfPersonId || planAppliesToPerson(plan, selectedPerson.id)) &&
           !(plan.toDate < visibleStart || plan.fromDate > visibleEnd)
       )
       .slice()
@@ -1482,7 +1492,7 @@ export default function App() {
     }
 
     return layoutByDay;
-  }, [allPlans, calendarDays, isPlanVisibleByGroups, planAppliesToPerson, selectedPerson]);
+  }, [allPlans, calendarDays, isPlanVisibleByGroups, planAppliesToPerson, selectedPerson, selfPersonId]);
   const monthCounts = useMemo(() => {
     const counts = { ...EMPTY_COUNTS };
     if (!selectedPerson) return counts;
@@ -1545,6 +1555,7 @@ export default function App() {
   };
 
   const openEditPlanModal = (plan: Plan) => {
+    if (!canEditPlan(plan)) return;
     setEditingPlanId(plan.id);
     setPlanName(plan.name);
     setPlanSummary(plan.summary ?? "");
@@ -1570,6 +1581,7 @@ export default function App() {
 
   const deletePlan = (planId: string) => {
     const removed = plans.find((plan) => plan.id === planId);
+    if (removed && removed.ownerId !== selfPersonId) return;
     setPlans((current) => current.filter((plan) => plan.id !== planId));
     if (removed && cloudUser?.id && removed.invitedIds.length > 0) {
       void deleteSharedPlan(cloudUser.id, planId);
@@ -1601,6 +1613,13 @@ export default function App() {
     if (planRecurring && !planRecurrenceInfinite && planRecurrenceCount < 1) {
       setPlanModalMessage("Set recurrence count to at least 1.");
       return;
+    }
+    if (editingPlanId) {
+      const existingPlan = allPlans.find((plan) => plan.id === editingPlanId);
+      if (existingPlan && !canEditPlan(existingPlan)) {
+        setPlanModalMessage("Only the host or invited users marked Going can edit this plan.");
+        return;
+      }
     }
 
     const baseCandidate: Plan = {
@@ -1733,6 +1752,27 @@ export default function App() {
     if (response === "cant") return "Can't";
     return "Pending";
   };
+  const incomingInviteByPlanId = useMemo(() => {
+    const map = new Map<string, SharedInvitePayload>();
+    for (const invite of incomingPlanInvites) {
+      map.set(invite.plan_id, invite);
+    }
+    return map;
+  }, [incomingPlanInvites]);
+  const getViewerInviteStatusForPlan = useCallback(
+    (plan: Plan) => {
+      const invite = incomingInviteByPlanId.get(plan.id);
+      return invite ? normalizeInviteStatus(invite.status) : null;
+    },
+    [incomingInviteByPlanId]
+  );
+  const canEditPlan = useCallback(
+    (plan: Plan) => {
+      if (plan.ownerId === selfPersonId) return true;
+      return getViewerInviteStatusForPlan(plan) === "going";
+    },
+    [getViewerInviteStatusForPlan, selfPersonId]
+  );
 
   const resetGroupForm = () => {
     setEditingGroupId(null);
@@ -2555,7 +2595,7 @@ export default function App() {
               const keyDate = toKeyDate(day);
               const entryKey = selectedPerson ? `${selectedPerson.id}:${keyDate}` : "";
               const status = selectedPerson ? store.entries[entryKey] ?? "none" : "none";
-              const dayPlans = selectedPerson ? getPlansForDay(keyDate, selectedPerson.id) : [];
+              const dayPlans = selectedPerson ? getCalendarCellPlansForDay(keyDate, selectedPerson.id) : [];
               const laidOutDayPlans = visiblePlanLanesByDay.get(keyDate) ?? [];
               const planBarColor = selectedPerson?.color ?? "#20c9a6";
               const visiblePlanSegments = laidOutDayPlans.slice(0, 3).map(({ plan, lane }) => {
@@ -3182,6 +3222,9 @@ export default function App() {
               {allPlans.length > 0 ? (
                 allPlans.map((plan) => {
                   const invited = invitedNames(plan.invitedIds);
+                  const viewerInvite = incomingInviteByPlanId.get(plan.id);
+                  const viewerInviteStatus = viewerInvite ? normalizeInviteStatus(viewerInvite.status) : null;
+                  const canEditCurrentPlan = canEditPlan(plan);
                   return (
                     <Panel key={plan.id} variant="card" borderWidth={1} className="plan-list-item prefs-section">
                       <h3>{plan.name}</h3>
@@ -3193,13 +3236,53 @@ export default function App() {
                       {plan.summary ? <p>Summary: {plan.summary}</p> : null}
                       <p>Visibility: {planTargetLabel(plan.targetGroupIds, plan.isPrivate)}</p>
                       <p>Invited: {invited.length > 0 ? invited.join(", ") : "No invites"}</p>
+                      {viewerInviteStatus ? (
+                        <p>
+                          Your response: {viewerInviteStatus === "going"
+                            ? "Going"
+                            : viewerInviteStatus === "maybe"
+                              ? "Maybe"
+                              : viewerInviteStatus === "cant"
+                                ? "Can't"
+                                : "Pending"}
+                        </p>
+                      ) : null}
+                      {viewerInvite ? (
+                        <div className="plan-item-actions">
+                          <Button
+                            type="button"
+                            variant={viewerInviteStatus === "going" ? "primary" : "ghost"}
+                            onClick={() => void handleInviteResponse(viewerInvite.id, "going")}
+                          >
+                            Going
+                          </Button>
+                          <Button
+                            type="button"
+                            variant={viewerInviteStatus === "maybe" ? "primary" : "ghost"}
+                            onClick={() => void handleInviteResponse(viewerInvite.id, "maybe")}
+                          >
+                            Maybe
+                          </Button>
+                          <Button
+                            type="button"
+                            variant={viewerInviteStatus === "cant" ? "delete" : "ghost"}
+                            onClick={() => void handleInviteResponse(viewerInvite.id, "cant")}
+                          >
+                            Can't
+                          </Button>
+                        </div>
+                      ) : null}
                       <div className="plan-item-actions">
-                        <Button type="button" variant="ghost" className="plan-icon-btn" onClick={() => openEditPlanModal(plan)} title="Edit plan">
-                          <FaEdit />
-                        </Button>
-                        <Button type="button" variant="delete" className="plan-icon-btn" onClick={() => deletePlan(plan.id)} title="Delete plan">
-                          <FaTrashAlt />
-                        </Button>
+                        {canEditCurrentPlan ? (
+                          <Button type="button" variant="ghost" className="plan-icon-btn" onClick={() => openEditPlanModal(plan)} title="Edit plan">
+                            <FaEdit />
+                          </Button>
+                        ) : null}
+                        {plan.ownerId === selfPersonId ? (
+                          <Button type="button" variant="delete" className="plan-icon-btn" onClick={() => deletePlan(plan.id)} title="Delete plan">
+                            <FaTrashAlt />
+                          </Button>
+                        ) : null}
                       </div>
                     </Panel>
                   );
