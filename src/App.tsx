@@ -1260,7 +1260,11 @@ export default function App() {
   }, [cloudFriendPeople, plans, selfPersonId]);
   const acceptedInviteeColorByPlan = useMemo(() => {
     const acceptedByPlan = new Map<string, string[]>();
-    const colorByPersonId = new Map(store.people.map((person) => [person.id, person.color] as const));
+    const colorByPersonId = new Map<string, string>();
+    for (const person of store.people) colorByPersonId.set(person.id, person.color);
+    for (const person of cloudFriendPeople) {
+      if (!colorByPersonId.has(person.id)) colorByPersonId.set(person.id, person.color);
+    }
     for (const invite of ownedPlanInvites) {
       const normalizedStatus = normalizeInviteStatus(invite.status);
       if (normalizedStatus !== "going") continue;
@@ -1271,7 +1275,7 @@ export default function App() {
       acceptedByPlan.set(invite.plan_id, current);
     }
     return acceptedByPlan;
-  }, [ownedPlanInvites, store.people]);
+  }, [cloudFriendPeople, ownedPlanInvites, store.people]);
   const inviteResponseByPlanAndPerson = useMemo(() => {
     const statusMap = new Map<string, InviteResponse>();
     for (const invite of ownedPlanInvites) {
@@ -1288,10 +1292,16 @@ export default function App() {
     }
     return map;
   }, [incomingPlanInvites]);
-  const personColorById = useMemo(
-    () => new Map(store.people.map((person) => [person.id, person.color] as const)),
-    [store.people]
-  );
+  const personColorById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const person of store.people) map.set(person.id, person.color);
+    for (const person of cloudFriendPeople) {
+      if (!map.has(person.id)) map.set(person.id, person.color);
+    }
+    const selfColor = store.people.find((person) => person.id === selfPersonId)?.color;
+    if (selfColor) map.set(selfPersonId, selfColor);
+    return map;
+  }, [cloudFriendPeople, selfPersonId, store.people]);
   const allPlans = useMemo(() => {
     const byId = new Map<string, Plan>();
     plans.forEach((plan) => byId.set(plan.id, plan));
@@ -1343,29 +1353,51 @@ export default function App() {
     [allPlans, isPlanVisibleByGroups, planAppliesToPerson, selfPersonId]
   );
   const getPlanPillStyle = useCallback(
-    (plan: Plan, personColor: string): CSSProperties => {
+    (plan: Plan, personColor: string, participantStripeColors?: string[]): CSSProperties => {
       const firstGroupColor = plan.targetGroupIds
         .map((groupId) => store.groups.find((group) => group.id === groupId)?.color ?? null)
         .find((color): color is string => Boolean(color));
-      const firstAcceptedInviteColor = acceptedInviteeColorByPlan.get(plan.id)?.[0] ?? null;
+      const inviteStripeColors = (participantStripeColors ?? acceptedInviteeColorByPlan.get(plan.id) ?? [])
+        .filter((color, index, source) => Boolean(color) && source.indexOf(color) === index);
+      const firstInviteStripeColor = inviteStripeColors[0] ?? null;
       const style: CSSProperties = {
         ["--plan-color" as string]: personColor,
       };
-      if (firstGroupColor && firstAcceptedInviteColor) {
+      if (firstGroupColor && inviteStripeColors.length > 0) {
+        const stripeStart = 62;
+        const stripeEnd = 84;
+        const stripeSize = (stripeEnd - stripeStart) / inviteStripeColors.length;
+        const stripeStops = inviteStripeColors
+          .map((color, index) => {
+            const start = stripeStart + stripeSize * index;
+            const end = stripeStart + stripeSize * (index + 1);
+            return `color-mix(in oklab, ${color} 36%, transparent) ${start}% ${end}%`;
+          })
+          .join(", ");
         style["--plan-gradient" as string] =
-          `linear-gradient(120deg, color-mix(in oklab, ${personColor} 36%, transparent) 0 62%, color-mix(in oklab, ${firstAcceptedInviteColor} 36%, transparent) 62% 75%, color-mix(in oklab, ${firstGroupColor} 36%, transparent) 75% 100%)`;
+          `linear-gradient(120deg, color-mix(in oklab, ${personColor} 36%, transparent) 0 ${stripeStart}%, ${stripeStops}, color-mix(in oklab, ${firstGroupColor} 36%, transparent) ${stripeEnd}% 100%)`;
         style["--plan-border-color" as string] =
-          `color-mix(in oklab, ${personColor} 65%, ${firstGroupColor} 20%, ${firstAcceptedInviteColor} 15%)`;
+          `color-mix(in oklab, ${personColor} 65%, ${firstGroupColor} 20%, ${firstInviteStripeColor} 15%)`;
       } else if (firstGroupColor) {
         style["--plan-gradient" as string] =
           `linear-gradient(120deg, color-mix(in oklab, ${personColor} 36%, transparent) 0 75%, color-mix(in oklab, ${firstGroupColor} 36%, transparent) 75% 100%)`;
         style["--plan-border-color" as string] =
           `color-mix(in oklab, ${personColor} 75%, ${firstGroupColor} 25%)`;
-      } else if (firstAcceptedInviteColor) {
+      } else if (inviteStripeColors.length > 0) {
+        const stripeStart = 84;
+        const stripeEnd = 100;
+        const stripeSize = (stripeEnd - stripeStart) / inviteStripeColors.length;
+        const stripeStops = inviteStripeColors
+          .map((color, index) => {
+            const start = stripeStart + stripeSize * index;
+            const end = stripeStart + stripeSize * (index + 1);
+            return `color-mix(in oklab, ${color} 36%, transparent) ${start}% ${end}%`;
+          })
+          .join(", ");
         style["--plan-gradient" as string] =
-          `linear-gradient(120deg, color-mix(in oklab, ${personColor} 36%, transparent) 0 84%, color-mix(in oklab, ${firstAcceptedInviteColor} 36%, transparent) 84% 100%)`;
+          `linear-gradient(120deg, color-mix(in oklab, ${personColor} 36%, transparent) 0 ${stripeStart}%, ${stripeStops})`;
         style["--plan-border-color" as string] =
-          `color-mix(in oklab, ${personColor} 80%, ${firstAcceptedInviteColor} 20%)`;
+          `color-mix(in oklab, ${personColor} 80%, ${firstInviteStripeColor} 20%)`;
       }
       return style;
     },
@@ -1759,15 +1791,40 @@ export default function App() {
     invitedIds
       .map((id) => store.people.find((person) => person.id === id)?.name)
       .filter((name): name is string => Boolean(name));
+  const getInviteStatusForPerson = useCallback(
+    (plan: Plan, personId: string): "pending" | InviteResponse | null => {
+      if (plan.ownerId === personId) return "going";
+      if (!plan.invitedIds.includes(personId)) return null;
+      const ownerTracked = inviteResponseByPlanAndPerson.get(`${plan.id}:${personId}`);
+      if (ownerTracked) return ownerTracked;
+      if (personId === selfPersonId) {
+        return incomingInviteStatusByPlan.get(plan.id) ?? "pending";
+      }
+      return "pending";
+    },
+    [incomingInviteStatusByPlan, inviteResponseByPlanAndPerson, selfPersonId]
+  );
   const getPlanParticipationStatus = (plan: Plan, personId: string) => {
     if (plan.ownerId === personId) return "Host";
     if (!plan.invitedIds.includes(personId)) return "Viewer";
-    const response = inviteResponseByPlanAndPerson.get(`${plan.id}:${personId}`);
+    const response = getInviteStatusForPerson(plan, personId);
     if (response === "going") return "Going";
     if (response === "maybe") return "Maybe";
     if (response === "cant") return "Can't";
     return "Pending";
   };
+  const getGoingStripeColorsForPlan = useCallback(
+    (plan: Plan) => {
+      const colors = [...(acceptedInviteeColorByPlan.get(plan.id) ?? [])];
+      const selfIncomingStatus = incomingInviteStatusByPlan.get(plan.id);
+      if (selfIncomingStatus === "going" && plan.ownerId !== selfPersonId) {
+        const selfColor = personColorById.get(selfPersonId);
+        if (selfColor && !colors.includes(selfColor)) colors.push(selfColor);
+      }
+      return colors;
+    },
+    [acceptedInviteeColorByPlan, incomingInviteStatusByPlan, personColorById, selfPersonId]
+  );
   const incomingInviteByPlanId = useMemo(() => {
     const map = new Map<string, SharedInvitePayload>();
     for (const invite of incomingPlanInvites) {
@@ -2043,15 +2100,10 @@ export default function App() {
       setOwnedPlanInvites([]);
       return;
     }
-    const ownPlanIds = plans.filter((plan) => plan.ownerId === socialUserId).map((plan) => plan.id);
-    if (ownPlanIds.length === 0) {
-      setOwnedPlanInvites([]);
-      return;
-    }
-    const { invites, error } = await listOwnedPlanInvites(socialUserId, ownPlanIds);
+    const { invites, error } = await listOwnedPlanInvites(socialUserId);
     if (error) return;
     setOwnedPlanInvites(invites);
-  }, [plans, socialUserId]);
+  }, [socialUserId]);
 
   const openFriendRequestModal = () => {
     setFriendRequestUsername("");
@@ -2635,12 +2687,24 @@ export default function App() {
                 const hasNext = isDateInRange(shiftKeyDate(keyDate, 1), plan.fromDate, plan.toDate);
                 const firstGroupId = plan.targetGroupIds[0];
                 const groupIcon = firstGroupId ? store.groups.find((group) => group.id === firstGroupId)?.icon ?? null : null;
-                const planOwnerColor = personColorById.get(plan.ownerId) ?? selectedPerson?.color ?? "#20c9a6";
+                const planBaseColor = personColorById.get(plan.ownerId) ?? selectedPerson?.color ?? "#20c9a6";
+                const participantStatus = selectedPerson ? getInviteStatusForPerson(plan, selectedPerson.id) : null;
+                const participantStripeColors = getGoingStripeColorsForPlan(plan);
+                if (
+                  selectedPerson &&
+                  participantStatus === "going" &&
+                  plan.ownerId !== selectedPerson.id
+                ) {
+                  const selectedColor = personColorById.get(selectedPerson.id) ?? selectedPerson.color;
+                  if (selectedColor && !participantStripeColors.includes(selectedColor)) {
+                    participantStripeColors.push(selectedColor);
+                  }
+                }
                 const segmentStyle: CSSProperties = {
                   left: `${startPct}%`,
                   right: `${100 - endPct}%`,
                   top: `${lane * 17}px`,
-                  ...getPlanPillStyle(plan, planOwnerColor),
+                  ...getPlanPillStyle(plan, planBaseColor, participantStripeColors),
                 };
                 return { plan, hasPrev, hasNext, segmentStyle, groupIcon };
               });
@@ -2734,6 +2798,14 @@ export default function App() {
                                 {segments.map(({ plan, start, end, lane, laneCount }) => {
                                   const firstGroupId = plan.targetGroupIds[0];
                                   const groupIcon = firstGroupId ? store.groups.find((group) => group.id === firstGroupId)?.icon ?? null : null;
+                                  const participantStatus = getInviteStatusForPerson(plan, person.id);
+                                  const participantStripeColors = getGoingStripeColorsForPlan(plan);
+                                  if (participantStatus === "going" && plan.ownerId !== person.id) {
+                                    const personStripeColor = personColorById.get(person.id) ?? person.color;
+                                    if (personStripeColor && !participantStripeColors.includes(personStripeColor)) {
+                                      participantStripeColors.push(personStripeColor);
+                                    }
+                                  }
                                   return (
                                     <div
                                       key={`${person.id}-${plan.id}-${start}-${lane}`}
@@ -2743,7 +2815,11 @@ export default function App() {
                                         height: `${Math.max(2, ((end - start) / (24 * 60)) * 100)}%`,
                                         ["--lane-index" as string]: lane,
                                         ["--lane-count" as string]: laneCount,
-                                        ...getPlanPillStyle(plan, personColorById.get(plan.ownerId) ?? person.color),
+                                        ...getPlanPillStyle(
+                                          plan,
+                                          person.color,
+                                          participantStripeColors
+                                        ),
                                       }}
                                       title={`${plan.name} - ${getPlanParticipationStatus(plan, person.id)}`}
                                     >

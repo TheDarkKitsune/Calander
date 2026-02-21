@@ -659,6 +659,7 @@ export const onCalendarRealtimeChange = (userId: string, onChange: () => void) =
     .channel(`calendar-realtime-${userId}`)
     .on("postgres_changes", { event: "*", schema: "public", table: "calendar_shared_plans" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "calendar_plan_invites", filter: `invitee_id=eq.${userId}` }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_plan_invites", filter: `inviter_id=eq.${userId}` }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "calendar_notifications", filter: `user_id=eq.${userId}` }, onChange)
     .subscribe();
 
