@@ -13,7 +13,7 @@
   --calendar-head-bg: rgba(12, 20, 38, 0.78);
   --pill-radius: 11px;
   --month-weekday-row-height: 40px;
-  --month-divider-row-height: 2px;
+  --month-divider-row-height: 1px;
   --month-day-row-height: 96px;
 }
 
@@ -1573,7 +1573,7 @@ body,
   min-height: var(--month-divider-row-height);
   padding: 0;
   margin: 0;
-  background: var(--ef-border-gradient);
+  background: transparent;
   pointer-events: none;
 }
 
@@ -1748,6 +1748,7 @@ body,
   padding: 0 6px;
   white-space: nowrap;
   min-width: 2%;
+  cursor: pointer;
 }
 
 .day-plan-content {
@@ -1999,6 +2000,8 @@ body,
 .day-timeline {
   --day-header-height: 74px;
   --day-row-size: 22px;
+  --day-header-gap: 3px;
+  --day-hour-gap: 1px;
   --day-self-scale: 1.15;
   --day-visible-friends: 3;
   --day-friend-column-min: 74px;
@@ -2007,9 +2010,16 @@ body,
   --day-self-column-width: calc(var(--day-friend-column-width) * var(--day-self-scale));
   display: grid;
   grid-template-columns: 72px 1fr;
-  gap: 0;
+  column-gap: 3px;
+  row-gap: 0px;
   height: 100%;
   min-height: 0;
+  border: 2px solid transparent;
+  border-radius: var(--pill-radius);
+  background:
+    linear-gradient(rgba(4, 9, 22, 0.55), rgba(4, 9, 22, 0.55)) padding-box,
+    var(--ef-border-gradient) border-box;
+  overflow: hidden;
 }
 
 .day-details-modal .ef-modal-body > :not(.ef-modal-actions) {
@@ -2023,12 +2033,9 @@ body,
 
 .day-time-labels {
   display: grid;
-  grid-template-rows: var(--day-header-height) repeat(24, var(--day-row-size));
-  border: 1px solid var(--calendar-line);
-  border-top-left-radius: var(--pill-radius);
-  border-bottom-left-radius: var(--pill-radius);
-  overflow: hidden;
-  background: var(--calendar-cell-bg);
+  grid-template-rows: var(--day-header-height) minmax(0, 1fr);
+  gap: var(--day-header-gap);
+  background: transparent;
   min-height: 0;
   height: 100%;
 }
@@ -2036,16 +2043,35 @@ body,
 .day-time-label-spacer {
   height: var(--day-header-height);
   min-height: var(--day-header-height);
-  border-bottom: 1px solid var(--calendar-line);
+  background: var(--calendar-month-cell-bg);
+}
+
+.day-time-label-hours {
+  display: grid;
+  grid-template-rows: repeat(24, var(--day-row-size));
+  gap: var(--day-hour-gap);
+  min-height: 0;
 }
 
 .day-time-label {
-  border-top: 1px solid color-mix(in oklab, var(--line) 82%, transparent);
-  padding: 10px 8px 0;
-  text-align: right;
+  position: relative;
+  background: var(--calendar-month-cell-bg);
+  overflow: visible;
+}
+
+.day-time-label-text {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  transform: translateY(-50%);
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--calendar-month-cell-bg);
   color: var(--text-muted);
   font-size: 0.72rem;
   letter-spacing: 0.04em;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .day-time-label:first-of-type {
@@ -2065,11 +2091,7 @@ body,
   );
   --day-self-column-width: calc(var(--day-friend-column-width) * var(--day-self-scale));
   padding-bottom: 0;
-  border: 1px solid var(--calendar-line);
-  border-radius: var(--pill-radius);
-  border-top-left-radius: 0px;
-  border-bottom-left-radius: 0px;
-  background: var(--calendar-cell-bg);
+  background: transparent;
   height: 100%;
   min-height: 0;
   box-sizing: border-box;
@@ -2078,7 +2100,8 @@ body,
 .day-time-columns {
   display: flex;
   align-items: stretch;
-  gap: 0;
+  gap: 1px;
+  background: transparent;
   width: max-content;
   min-height: 100%;
 }
@@ -2086,15 +2109,12 @@ body,
 .day-time-column {
   display: grid !important;
   grid-template-rows: var(--day-header-height) minmax(0, 1fr);
+  gap: var(--day-header-gap);
   flex: 0 0 var(--day-friend-column-width);
   min-width: var(--day-friend-column-width);
-  gap: 0;
   overflow: hidden;
-  border-left: 1px solid var(--line);
   border-radius: 0 !important;
-  border-top: 0 !important;
-  border-right: 0 !important;
-  border-bottom: 0 !important;
+  border: 0 !important;
   box-shadow: none !important;
   background: transparent !important;
   padding: 0 !important;
@@ -2107,10 +2127,7 @@ body,
   z-index: 5;
   flex-basis: var(--day-self-column-width);
   min-width: var(--day-self-column-width);
-  background: var(--ef-surface);
-  border-left: 0;
-  border-right: 1px solid var(--line);
-  border-top-left-radius: 0px;
+  background: transparent !important;
 }
 
 .day-time-column-header {
@@ -2121,11 +2138,10 @@ body,
   max-height: none;
   align-content: center;
   padding: 8px 10px;
-  border-bottom: 3px solid var(--plan-color, color-mix(in oklab, var(--line) 86%, transparent));
-  background: var(--ef-surface);
+  border-bottom: 0;
+  background: var(--calendar-month-cell-bg);
   box-sizing: border-box;
   overflow: hidden;
-  position: relative;
 }
 
 .day-time-column-header h3 {
@@ -2146,40 +2162,10 @@ body,
   position: relative;
   display: grid;
   grid-template-rows: repeat(24, var(--day-row-size));
-  border: 0;
-  border-radius: 0;
-  overflow: hidden;
-  background: var(--calendar-cell-bg);
+  gap: var(--day-hour-gap);
+  background: transparent;
   min-height: 0;
   height: 100%;
-}
-
-.day-time-column.is-self .day-time-column-header::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: var(--ef-surface);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.day-time-column.is-self .day-time-column-header > * {
-  position: relative;
-  z-index: 1;
-}
-
-.day-time-column.is-self .day-time-grid::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: rgb(8, 13, 24);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.day-time-column.is-self .day-time-row {
-  position: relative;
-  z-index: 1;
 }
 
 .day-time-column.is-self .day-time-plan-layer {
@@ -2187,7 +2173,8 @@ body,
 }
 
 .day-time-row {
-  border-top: 1px solid color-mix(in oklab, var(--line) 86%, transparent);
+  border-top: 0;
+  background: var(--calendar-month-cell-bg);
 }
 
 .day-time-row:first-child {
@@ -2198,26 +2185,27 @@ body,
 .day-time-plan-layer {
   position: absolute;
   inset: 0;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .day-time-plan {
   position: absolute;
-  pointer-events: none;
+  pointer-events: auto;
   left: calc(4px + ((100% - 8px) * (var(--lane-index, 0) / var(--lane-count, 1))));
   width: calc(((100% - 8px) / var(--lane-count, 1)) - 2px);
   min-height: 22px;
   border-radius: 7px;
   border: 2px solid transparent;
   background:
-    linear-gradient(color-mix(in oklab, var(--plan-color, #20c9a6) 14%, var(--ef-button-surface)), color-mix(in oklab, var(--plan-color, #20c9a6) 14%, var(--ef-button-surface))) padding-box,
+    linear-gradient(var(--calendar-month-cell-bg), var(--calendar-month-cell-bg)) padding-box,
     var(--plan-gradient, linear-gradient(135deg, color-mix(in oklab, var(--plan-color, #20c9a6) 82%, white 18%), color-mix(in oklab, var(--plan-color, #20c9a6) 70%, white 30%))) border-box;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.22);
+  box-shadow: none;
   padding: 4px 6px;
   display: flex;
   align-items: flex-start;
   gap: 6px;
   overflow: hidden;
+  cursor: pointer;
 }
 
 .day-time-plan-main {
@@ -2555,6 +2543,7 @@ body,
       repeat(6, minmax(var(--month-day-row-height), 1fr));
     gap: 1px;
     border-radius: 0;
+    border: none
   }
 
   .weekday-cell:first-child,
@@ -2629,7 +2618,10 @@ body,
     --day-friend-column-width: 78px;
     --day-self-column-width: calc(var(--day-friend-column-width) * var(--day-self-scale));
     grid-template-columns: 58px 1fr;
-    gap: 0;
+    --day-header-gap: 3px;
+    --day-hour-gap: 1px;
+    column-gap: 3px;
+    row-gap: 0;
   }
 
   .day-time-columns-scroll {
@@ -2639,7 +2631,11 @@ body,
 
   .day-time-label {
     font-size: 0.66rem;
-    padding: 8px 4px 0;
+  }
+
+  .day-time-label-text {
+    right: 4px;
+    font-size: 0.66rem;
   }
 
   .plan-date-grid {

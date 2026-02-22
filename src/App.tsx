@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type TouchEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type MouseEvent, type TouchEvent } from "react";
 import { Button, Dropdown, FloatingFooter, Input, MainHeader, Modal, Panel, PreferencesModal, SideMenu, SideMenuSubmenu, Toggle, applyTheme, getStoredTheme } from "@enderfall/ui";
 import { FaBell, FaCircle, FaEdit, FaList, FaPen, FaTrashAlt, FaUserFriends, FaUsers } from "react-icons/fa";
 import { FaInfinity } from "react-icons/fa6";
@@ -1620,8 +1620,12 @@ export default function App() {
     const updateRowSize = () => {
       const styles = getComputedStyle(node);
       const rawHeader = styles.getPropertyValue("--day-header-height").trim();
+      const rawHeaderGap = styles.getPropertyValue("--day-header-gap").trim();
+      const rawHourGap = styles.getPropertyValue("--day-hour-gap").trim();
       const headerHeight = Number.parseFloat(rawHeader.replace("px", "")) || 74;
-      const available = Math.max(0, node.clientHeight - headerHeight);
+      const headerGap = Number.parseFloat(rawHeaderGap.replace("px", "")) || 0;
+      const hourGap = Number.parseFloat(rawHourGap.replace("px", "")) || 0;
+      const available = Math.max(0, node.clientHeight - headerHeight - headerGap - (hourGap * 23));
       const next = Math.max(18, available / 24);
       setDayTimelineRowSize((current) => (Math.abs(current - next) < 0.2 ? current : next));
     };
@@ -1711,6 +1715,12 @@ export default function App() {
 
   const closeDayModal = () => {
     setDayModalDate(null);
+  };
+
+  const openPlanDetailsFromPill = (event: MouseEvent<HTMLElement>, planId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setPlanDetailsPlanId(planId);
   };
 
   const togglePlanInvite = (personId: string) => {
@@ -3096,6 +3106,7 @@ export default function App() {
                         className={`day-plan-bar ${hasPrev ? "is-continued-prev" : ""} ${hasNext ? "is-continued-next" : ""}`}
                         style={segmentStyle}
                         title={plan.name}
+                        onClick={(event) => openPlanDetailsFromPill(event, plan.id)}
                       >
                         <span className="day-plan-content">
                           <span className="day-plan-name">{plan.name}</span>
@@ -3129,11 +3140,13 @@ export default function App() {
                 >
                   <div className="day-time-labels">
                     <div className="day-time-label-spacer" />
-                    {DAY_HOURS.map((hour) => (
-                      <div key={`day-hour-${hour}`} className="day-time-label">
-                        {hour}
-                      </div>
-                    ))}
+                    <div className="day-time-label-hours">
+                      {DAY_HOURS.map((hour) => (
+                        <div key={`day-hour-${hour}`} className="day-time-label">
+                          <span className="day-time-label-text">{hour}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                   <div
                     className="day-time-columns-scroll"
@@ -3183,6 +3196,7 @@ export default function App() {
                                     <div
                                       key={`${person.id}-${plan.id}-${start}-${lane}`}
                                       className="day-time-plan"
+                                      onClick={(event) => openPlanDetailsFromPill(event, plan.id)}
                                       style={{
                                         top: `${(start / (24 * 60)) * 100}%`,
                                         height: `${Math.max(2, ((end - start) / (24 * 60)) * 100)}%`,
