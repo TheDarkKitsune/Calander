@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type TouchEvent } from "react";
 import { Button, Dropdown, FloatingFooter, Input, MainHeader, Modal, Panel, PreferencesModal, SideMenu, SideMenuSubmenu, Toggle, applyTheme, getStoredTheme } from "@enderfall/ui";
-import { FaBell, FaEdit, FaList, FaPen, FaTrashAlt, FaUserFriends, FaUsers } from "react-icons/fa";
+import { FaBell, FaCircle, FaEdit, FaList, FaPen, FaTrashAlt, FaUserFriends, FaUsers } from "react-icons/fa";
 import { FaInfinity } from "react-icons/fa6";
 import { readSharedPreferences, refreshLaunchToken, writeSharedPreferences, type LaunchToken, isTauri as runtimeIsTauri } from "@enderfall/runtime";
 import {
@@ -454,6 +454,32 @@ const formatNotificationSourceType = (type: string): string => {
     .join(" ");
 };
 
+const toLocalDateKey = (value: string | null | undefined) => {
+  if (!value) return toKeyDate(new Date());
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return toKeyDate(new Date());
+  return toKeyDate(date);
+};
+
+const formatDateDividerLabel = (dateKey: string) => {
+  const [year, month, day] = dateKey.split("-").map((part) => Number(part));
+  const date = new Date(year, (month || 1) - 1, day || 1);
+  return date.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+};
+
+const formatNotificationTimeLabel = (value: string | null | undefined, nowMs: number) => {
+  if (!value) return "Now";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Now";
+  const diffMs = Math.max(0, nowMs - date.getTime());
+  const diffMin = Math.floor(diffMs / 60000);
+  const diffHr = Math.floor(diffMs / 3600000);
+  if (diffMs < 60000) return "Now";
+  if (diffMin < 60) return `${diffMin} min`;
+  if (diffHr < 24) return `${diffHr} hr`;
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+};
+
 const isDateInRange = (dateKey: string, fromDate: string, toDate: string) => {
   const [start, end] = fromDate <= toDate ? [fromDate, toDate] : [toDate, fromDate];
   return dateKey >= start && dateKey <= end;
@@ -723,6 +749,7 @@ export default function App() {
   const [deleteFriendConfirmOpen, setDeleteFriendConfirmOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notificationsTab, setNotificationsTab] = useState<"activity" | "invites">("activity");
+  const [notificationClockMs, setNotificationClockMs] = useState(() => Date.now());
   const [inviteActionMessage, setInviteActionMessage] = useState("");
   const [cloudNotifications, setCloudNotifications] = useState<CloudNotification[]>([]);
   const [incomingPlanInvites, setIncomingPlanInvites] = useState<SharedInvitePayload[]>([]);
@@ -1479,6 +1506,7 @@ export default function App() {
         ["--plan-color" as string]: personColor,
         ["--plan-gradient" as string]: `linear-gradient(120deg, ${personColor} 0 100%)`,
         ["--plan-border-color" as string]: personColor,
+        ["--plan-stripe-color" as string]: "transparent",
       };
       if (firstGroupColor && inviteStripeColors.length > 0) {
         const stripeStart = 62;
@@ -1493,8 +1521,8 @@ export default function App() {
           .join(", ");
         style["--plan-gradient" as string] =
           `linear-gradient(120deg, ${personColor} 0 ${stripeStart}%, ${stripeStops}, ${firstGroupColor} ${stripeEnd}% 100%)`;
-        style["--plan-border-color" as string] =
-          `${firstInviteStripeColor ?? firstGroupColor}`;
+        style["--plan-border-color" as string] = `${firstGroupColor}`;
+        style["--plan-stripe-color" as string] = `${firstInviteStripeColor ?? "transparent"}`;
       } else if (firstGroupColor) {
         style["--plan-gradient" as string] =
           `linear-gradient(120deg, ${personColor} 0 75%, ${firstGroupColor} 75% 100%)`;
@@ -1513,8 +1541,8 @@ export default function App() {
           .join(", ");
         style["--plan-gradient" as string] =
           `linear-gradient(120deg, ${personColor} 0 ${stripeStart}%, ${stripeStops})`;
-        style["--plan-border-color" as string] =
-          `${firstInviteStripeColor ?? personColor}`;
+        style["--plan-border-color" as string] = `${personColor}`;
+        style["--plan-stripe-color" as string] = `${firstInviteStripeColor ?? "transparent"}`;
       }
       return style;
     },
@@ -1686,6 +1714,21 @@ export default function App() {
   };
 
   const togglePlanInvite = (personId: string) => {
+    const isCurrentlyInvited = planInvitedIds.includes(personId);
+    if (isCurrentlyInvited && editingPlanId) {
+      const status = inviteResponseByPlanAndPerson.get(`${editingPlanId}:${personId}`) ?? "pending";
+      if (status !== "pending") {
+        const personName =
+          store.people.find((person) => person.id === personId)?.name ??
+          cloudFriendPeople.find((person) => person.id === personId)?.name ??
+          "This person";
+        const statusLabel = status === "going" ? "Going" : status === "maybe" ? "Maybe" : "Can't";
+        const confirmed = window.confirm(
+          `${personName} has already responded "${statusLabel}" to this event. Continue and remove them from the plan?`
+        );
+        if (!confirmed) return;
+      }
+    }
     setPlanInvitedIds((current) =>
       current.includes(personId) ? current.filter((id) => id !== personId) : [...current, personId]
     );
@@ -2335,7 +2378,9 @@ export default function App() {
   };
 
   const clearActivityNotifications = async () => {
-    const ids = activityNotifications.map((notification) => notification.id);
+    const ids = cloudNotifications
+      .filter((notification) => String(notification.type ?? "").toLowerCase() !== "plan_invite")
+      .map((notification) => notification.id);
     if (ids.length === 0) return;
     const { error } = await clearNotificationsByIds(ids);
     if (error) return;
@@ -2395,6 +2440,13 @@ export default function App() {
     );
     return () => unsubscribe();
   }, [cloudFriends, refreshCloudFriends, socialUserId]);
+
+  useEffect(() => {
+    if (!notificationsOpen) return;
+    setNotificationClockMs(Date.now());
+    const interval = window.setInterval(() => setNotificationClockMs(Date.now()), 30000);
+    return () => window.clearInterval(interval);
+  }, [notificationsOpen]);
 
   useEffect(() => {
     if (!notificationsOpen || notificationsTab !== "activity") return;
@@ -2705,6 +2757,10 @@ export default function App() {
   const authDisplayName = launchToken?.displayName ?? launchToken?.email?.split("@")[0] ?? cloudUser?.email?.split("@")[0] ?? "User";
   const authAvatarFallback = authDisplayName.slice(0, 1).toUpperCase();
   const authAvatarUrl = launchToken?.avatarUrl ?? cloudProfileAvatarUrl ?? cloudUser?.avatarUrl ?? null;
+  const planModalMessageIsError = useMemo(
+    () => (planModalMessage ? !/created|updated|generated/i.test(planModalMessage) : false),
+    [planModalMessage]
+  );
   const unreadNotificationCount = useMemo(
     () =>
       cloudNotifications.filter((notification) => !notification.is_read).length +
@@ -2723,6 +2779,44 @@ export default function App() {
       }),
     [cloudNotifications]
   );
+  const groupedInviteNotifications = useMemo(() => {
+    const groups = new Map<string, SharedInvitePayload[]>();
+    const sorted = [...pendingIncomingPlanInvites].sort((left, right) => {
+      const leftTime = left.created_at ? new Date(left.created_at).getTime() : 0;
+      const rightTime = right.created_at ? new Date(right.created_at).getTime() : 0;
+      return rightTime - leftTime;
+    });
+    for (const invite of sorted) {
+      const dateKey = toLocalDateKey(invite.created_at);
+      const bucket = groups.get(dateKey) ?? [];
+      bucket.push(invite);
+      groups.set(dateKey, bucket);
+    }
+    return [...groups.entries()].map(([dateKey, invites]) => ({
+      dateKey,
+      label: formatDateDividerLabel(dateKey),
+      invites,
+    }));
+  }, [pendingIncomingPlanInvites]);
+  const groupedActivityNotifications = useMemo(() => {
+    const groups = new Map<string, CloudNotification[]>();
+    const sorted = [...activityNotifications].sort((left, right) => {
+      const leftTime = left.created_at ? new Date(left.created_at).getTime() : 0;
+      const rightTime = right.created_at ? new Date(right.created_at).getTime() : 0;
+      return rightTime - leftTime;
+    });
+    for (const notification of sorted) {
+      const dateKey = toLocalDateKey(notification.created_at);
+      const bucket = groups.get(dateKey) ?? [];
+      bucket.push(notification);
+      groups.set(dateKey, bucket);
+    }
+    return [...groups.entries()].map(([dateKey, notifications]) => ({
+      dateKey,
+      label: formatDateDividerLabel(dateKey),
+      notifications,
+    }));
+  }, [activityNotifications]);
   const unreadActivityCount = useMemo(
     () => activityNotifications.filter((notification) => !notification.is_read).length,
     [activityNotifications]
@@ -2908,22 +3002,18 @@ export default function App() {
           </div>
         </Panel>
 
-        <Panel
-          variant="full"
-          borderWidth={2}
-          className="calendar-panel"
+        <div
+          className="calendar-grid"
           onTouchStart={onCalendarTouchStart}
           onTouchEnd={onCalendarTouchEnd}
         >
-          <div className="weekday-row">
             {WEEK_DAYS.map((day) => (
-              <Panel key={day} variant="header" borderWidth={1} className="weekday-cell">
+              <div key={`weekday-${day}`} className="weekday-cell" aria-hidden="true">
                 {day}
-              </Panel>
+              </div>
             ))}
-          </div>
-          <div className="calendar-grid">
-            {calendarDays.map((day) => {
+            <div className="calendar-weekday-separator" aria-hidden="true" />
+            {calendarDays.map((day, dayIndex) => {
               const isOtherMonth = day.getMonth() !== monthAnchor.getMonth();
               if (hideOutsideMonthDays && isOtherMonth) {
                 return <div key={toKeyDate(day)} className="day-cell day-cell-placeholder" aria-hidden="true" />;
@@ -2933,14 +3023,35 @@ export default function App() {
               const status = selectedPerson ? store.entries[entryKey] ?? "none" : "none";
               const dayPlans = selectedPerson ? getCalendarCellPlansForDay(keyDate, selectedPerson.id) : [];
               const laidOutDayPlans = visiblePlanLanesByDay.get(keyDate) ?? [];
-              const visiblePlanSegments = laidOutDayPlans.slice(0, 3).map(({ plan, lane }) => {
+              const weekStartIndex = Math.floor(dayIndex / 7) * 7;
+              const weekEndIndex = weekStartIndex + 6;
+              const visiblePlanSegments = laidOutDayPlans.slice(0, 3).flatMap(({ plan, lane }) => {
                 const startsToday = keyDate === plan.fromDate;
-                const endsToday = keyDate === plan.toDate;
-                const startPct = plan.allDay || !startsToday ? 0 : (timeToMinutes(plan.fromTime) / (24 * 60)) * 100;
-                const rawEndPct = plan.allDay || !endsToday ? 100 : (timeToMinutes(plan.toTime) / (24 * 60)) * 100;
-                const endPct = Math.max(startPct + 1, rawEndPct);
+                const hasPrevInWeek =
+                  dayIndex > weekStartIndex &&
+                  isDateInRange(shiftKeyDate(keyDate, -1), plan.fromDate, plan.toDate);
+                if (hasPrevInWeek) return [];
                 const hasPrev = isDateInRange(shiftKeyDate(keyDate, -1), plan.fromDate, plan.toDate);
-                const hasNext = isDateInRange(shiftKeyDate(keyDate, 1), plan.fromDate, plan.toDate);
+
+                const startPct = plan.allDay || !startsToday ? 0 : (timeToMinutes(plan.fromTime) / (24 * 60)) * 100;
+                let runEndIndex = dayIndex;
+                for (let cursor = dayIndex + 1; cursor <= weekEndIndex; cursor += 1) {
+                  const cursorKey = toKeyDate(calendarDays[cursor]);
+                  if (!isDateInRange(cursorKey, plan.fromDate, plan.toDate)) break;
+                  runEndIndex = cursor;
+                }
+                const runDays = runEndIndex - dayIndex + 1;
+                const runEndKey = toKeyDate(calendarDays[runEndIndex]);
+                const hasNext = isDateInRange(shiftKeyDate(runEndKey, 1), plan.fromDate, plan.toDate);
+                const endsOnRunEnd = runEndKey === plan.toDate;
+                const runEndPctRaw = plan.allDay || !endsOnRunEnd ? 100 : (timeToMinutes(plan.toTime) / (24 * 60)) * 100;
+                const runEndPct = Math.max(1, runEndPctRaw);
+                const firstSlicePct = Math.max(1, 100 - startPct);
+                const middleDays = Math.max(0, runDays - 2);
+                const widthExpr =
+                  runDays === 1
+                    ? `${Math.max(1, runEndPct - startPct)}%`
+                    : `calc(${firstSlicePct}% + ${middleDays} * 100% + ${runEndPct}% + ${(runDays - 1)}px)`;
                 const firstGroupId = plan.targetGroupIds[0];
                 const groupIcon = firstGroupId ? store.groups.find((group) => group.id === firstGroupId)?.icon ?? null : null;
                 const planBaseColor = personColorById.get(plan.ownerId) ?? selectedPerson?.color ?? "#20c9a6";
@@ -2958,11 +3069,11 @@ export default function App() {
                 }
                 const segmentStyle: CSSProperties = {
                   left: `${startPct}%`,
-                  right: `${100 - endPct}%`,
+                  width: widthExpr,
                   top: `${lane * 17}px`,
                   ...getPlanPillStyle(plan, planBaseColor, participantStripeColors),
                 };
-                return { plan, hasPrev, hasNext, segmentStyle, groupIcon };
+                return [{ plan, hasPrev, hasNext, segmentStyle, groupIcon }];
               });
               const meta = status !== "none" ? STATUS_LOOKUP[status] : null;
               const isToday = keyDate === toKeyDate(new Date());
@@ -2998,8 +3109,7 @@ export default function App() {
                 </button>
               );
             })}
-          </div>
-        </Panel>
+        </div>
 
         <Modal
           isOpen={Boolean(dayModalDate)}
@@ -3319,6 +3429,11 @@ export default function App() {
         <Modal isOpen={createPlanOpen} title={editingPlanId ? "Edit Plan" : "Create Plan"} subtitle="Set time range and invite people" size="wide" onClose={() => setCreatePlanOpen(false)}>
           <div className="ef-modal-form">
             <form className="plan-create-form" onSubmit={savePlan}>
+              {planModalMessage ? (
+                <p className={`cloud-status notifications-toast${planModalMessageIsError ? " is-error" : ""}`}>
+                  {planModalMessage}
+                </p>
+              ) : null}
               <label>
                 Plan Name
                 <Input
@@ -3525,17 +3640,51 @@ export default function App() {
               <fieldset className="plan-invite-list">
                 <legend>Invite Friends / Family</legend>
                 {planInvitePeople.length > 0 ? (
-                  planInvitePeople.map((person) => (
-                    <Toggle
-                      key={person.id}
-                      variant="switch"
-                      className="plan-invite-item"
-                      checked={planInvitedIds.includes(person.id)}
-                      onChange={() => togglePlanInvite(person.id)}
-                      disabled={planIsPrivate}
-                      label={person.name}
-                    />
-                  ))
+                  planInvitePeople.map((person) => {
+                    const participantFriend = cloudFriendPeople.find((friend) => friend.id === person.id);
+                    const participantAvatar = participantFriend?.avatarUrl ?? null;
+                    const isInvited = planInvitedIds.includes(person.id);
+                    const response = editingPlanId
+                      ? inviteResponseByPlanAndPerson.get(`${editingPlanId}:${person.id}`) ?? "pending"
+                      : "pending";
+                    return (
+                    <div key={person.id} className="plan-invite-row">
+                      <span className="plan-invite-left">
+                        <Toggle
+                          variant="switch"
+                          className="plan-invite-item"
+                          checked={planInvitedIds.includes(person.id)}
+                          onChange={() => togglePlanInvite(person.id)}
+                          disabled={planIsPrivate}
+                          aria-label={`Invite ${person.name}`}
+                        />
+                        <span className="plan-invite-person">
+                          <span className="pill-icon-badge user-pill-avatar manager-card-avatar plan-invite-avatar" aria-hidden="true">
+                            {participantAvatar ? (
+                              <img src={participantAvatar} alt={person.name} loading="lazy" referrerPolicy="no-referrer" crossOrigin="anonymous" />
+                            ) : (
+                              person.name.slice(0, 1).toUpperCase()
+                            )}
+                          </span>
+                          <span className="plan-invite-name">{person.name}</span>
+                        </span>
+                      </span>
+                      {editingPlanId ? (
+                        <span className={`notification-chip ${isInvited ? `status-${response}` : "status-read"}`}>
+                          {!isInvited
+                            ? "Not invited"
+                            : response === "going"
+                              ? "Going"
+                              : response === "maybe"
+                                ? "Maybe"
+                                : response === "cant"
+                                  ? "Can't"
+                                  : "Pending"}
+                        </span>
+                      ) : null}
+                    </div>
+                    );
+                  })
                 ) : (
                   <p className="cloud-meta">No friend/family users available.</p>
                 )}
@@ -3550,7 +3699,6 @@ export default function App() {
                 </Button>
               </div>
             </form>
-            {planModalMessage ? <p className="plan-form-message">{planModalMessage}</p> : null}
           </div>
         </Modal>
         <Modal
@@ -4086,8 +4234,12 @@ export default function App() {
                   <span className="notifications-count">{pendingIncomingPlanInvites.length}</span>
                 </div>
                 <div className="notifications-list">
-                  {pendingIncomingPlanInvites.length > 0 ? (
-                    pendingIncomingPlanInvites.map((invite) => {
+                  {groupedInviteNotifications.length > 0 ? (
+                    groupedInviteNotifications.map(({ dateKey, label, invites }) => (
+                      <div key={`invite-group-${dateKey}`} className="plan-date-group">
+                        <div className="plan-date-divider"><span>{label}</span></div>
+                        <div className="plan-date-group-list">
+                    {invites.map((invite) => {
                       const relatedPlan = allPlans.find((plan) => plan.id === invite.plan_id);
                       const inviteStatus = normalizeInviteStatus(invite.status);
                       const inviteStatusLabel = inviteStatus === "going"
@@ -4113,6 +4265,7 @@ export default function App() {
                         : null;
                       const ownerName = isSelfOwner ? "You" : ownerLocalPerson?.name ?? ownerCloudPerson?.name ?? "Friend";
                       const ownerAvatar = isSelfOwner ? authAvatarUrl : ownerCloudPerson?.avatarUrl ?? null;
+                      const inviteTimeLabel = formatNotificationTimeLabel(invite.created_at ?? null, notificationClockMs);
                       return (
                         <Panel
                           key={invite.id}
@@ -4131,6 +4284,8 @@ export default function App() {
                                 )}
                               </span>
                               <span className="notification-owner-name">{ownerName}</span>
+                              <span className="notification-time-separator" aria-hidden="true"><FaCircle /></span>
+                              <span className="notification-time">{inviteTimeLabel}</span>
                             </span>
                             <h4>{relatedPlan?.name ?? "Plan Invite"}</h4>
                             <span className={`notification-chip status-${inviteStatus}`}>{inviteStatusLabel}</span>
@@ -4153,7 +4308,10 @@ export default function App() {
                           </div>
                         </Panel>
                       );
-                    })
+                    })}
+                        </div>
+                      </div>
+                    ))
                   ) : (
                     <p className="cloud-meta">No plan invites.</p>
                   )}
@@ -4172,8 +4330,12 @@ export default function App() {
                   </div>
                 </div>
                 <div className="notifications-list" ref={activityListRef}>
-                  {activityNotifications.length > 0 ? (
-                    activityNotifications.map((notification) => {
+                  {groupedActivityNotifications.length > 0 ? (
+                    groupedActivityNotifications.map(({ dateKey, label, notifications }) => (
+                      <div key={`activity-group-${dateKey}`} className="plan-date-group">
+                        <div className="plan-date-divider"><span>{label}</span></div>
+                        <div className="plan-date-group-list">
+                    {notifications.map((notification) => {
                       const sourceUserId = notificationSourceUserId(notification.payload);
                       const isSelfSource = Boolean(sourceUserId && socialUserId && sourceUserId === socialUserId);
                       const sourcePerson = sourceUserId ? cloudFriendPeople.find((person) => person.id === sourceUserId) : null;
@@ -4187,6 +4349,7 @@ export default function App() {
                           ? authAvatarUrl
                           : sourcePerson?.avatarUrl ?? null
                         : null;
+                      const notificationTimeLabel = formatNotificationTimeLabel(notification.created_at ?? null, notificationClockMs);
                       return (
                       <Panel
                         key={notification.id}
@@ -4204,6 +4367,8 @@ export default function App() {
                               </span>
                             ) : null}
                             <span className="notification-owner-name">{sourceName}</span>
+                            <span className="notification-time-separator" aria-hidden="true"><FaCircle /></span>
+                            <span className="notification-time">{notificationTimeLabel}</span>
                           </span>
                           <span className={`notification-chip ${notification.is_read ? "status-read" : "status-unread"}`}>
                             {notification.is_read ? "Read" : "Unread"}
@@ -4217,7 +4382,10 @@ export default function App() {
                         </div>
                       </Panel>
                     );
-                    })
+                    })}
+                        </div>
+                      </div>
+                    ))
                   ) : (
                     <p className="cloud-meta">No activity items.</p>
                   )}

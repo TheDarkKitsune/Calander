@@ -7,8 +7,14 @@
   --calendar-unavailable: #ff4c33;
   --calendar-booked: #6797ff;
   --calendar-cell-bg: rgba(8, 13, 24, 0.76);
-  --calendar-line: rgba(255, 255, 255, 0.22);
+  --calendar-month-cell-bg: #080d18;
+  --calendar-line: rgba(165, 190, 255, 0.2);
+  --calendar-line-soft: rgba(165, 190, 255, 0.12);
+  --calendar-head-bg: rgba(12, 20, 38, 0.78);
   --pill-radius: 11px;
+  --month-weekday-row-height: 40px;
+  --month-divider-row-height: 2px;
+  --month-day-row-height: 96px;
 }
 
 * {
@@ -727,6 +733,27 @@ body,
   white-space: nowrap;
 }
 
+.notification-time {
+  font-size: 0.66rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.notification-time-separator {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+
+.notification-time-separator svg {
+  width: 0.34rem;
+  height: 0.34rem;
+}
+
 .notification-owner-spacer {
   display: inline-block;
   width: 1px;
@@ -791,6 +818,10 @@ body,
   max-height: none;
   overflow: visible;
   padding-right: 2px;
+}
+
+.notifications-list .plan-date-group:first-child .plan-date-divider {
+  display: flex;
 }
 
 .notification-card {
@@ -1352,13 +1383,21 @@ body,
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid rgba(95, 157, 255, 0.48) !important;
-  border-radius: var(--pill-radius) !important;
-  background: rgba(95, 157, 255, 0.16) !important;
-  color: var(--text-strong) !important;
-  padding: 5px 10px !important;
-  font-size: 0.76rem;
+  border: 2px solid transparent !important;
+  border-radius: 8px !important;
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    var(--plan-gradient, linear-gradient(
+      135deg,
+      color-mix(in oklab, var(--plan-color, #20c9a6) 82%, white 18%),
+      color-mix(in oklab, var(--plan-color, #20c9a6) 70%, white 30%)
+    )) border-box !important;
+  color: #dffaff !important;
+  padding: 5px 9px !important;
+  font-size: 0.64rem;
   font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   cursor: pointer;
   box-shadow: none !important;
   height: 28px;
@@ -1368,20 +1407,24 @@ body,
 }
 
 .secondary-pill.is-person {
-  background: color-mix(in oklab, var(--plan-color, #20c9a6) 36%, transparent) !important;
-  border: 1px solid color-mix(in oklab, var(--plan-color, #20c9a6) 76%, white 12%) !important;
-  color: #dffaff !important;
+  --plan-gradient: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--plan-color, #20c9a6) 82%, white 18%),
+    color-mix(in oklab, var(--plan-color, #20c9a6) 70%, white 30%)
+  );
 }
 
 .secondary-pill.is-group {
-  background: color-mix(in oklab, var(--plan-color, #5f9dff) 36%, transparent) !important;
-  border: 1px solid color-mix(in oklab, var(--plan-color, #5f9dff) 76%, white 12%) !important;
-  color: #dffaff !important;
+  --plan-gradient: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--plan-color, #5f9dff) 82%, white 18%),
+    color-mix(in oklab, var(--plan-color, #5f9dff) 70%, white 30%)
+  );
 }
 
 .secondary-pill.is-hidden {
-  opacity: 0.48;
-  border-style: dashed;
+  opacity: 0.45;
+  filter: saturate(0.7);
 }
 
 .group-pill-icon {
@@ -1496,51 +1539,76 @@ body,
   outline-offset: 1px;
 }
 
-.calendar-panel {
-  border: 1px solid var(--calendar-line);
-  border-radius: 16px;
-  padding: 10px;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
 .weekday-row {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 0;
-  border-radius: 1px;
+  gap: 1px;
+  margin-bottom: 2px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  background:
+    linear-gradient(rgba(4, 9, 22, 0.55), rgba(4, 9, 22, 0.55)) padding-box,
+    var(--ef-border-gradient) border-box;
+  border-radius: 12px 12px 0 0;
   overflow: hidden;
 }
 
 .weekday-cell {
-  border-radius: 0;
+  border-radius: 0 !important;
+  border: 0 !important;
+  background: var(--calendar-month-cell-bg) !important;
+  box-shadow: none !important;
+  color: color-mix(in oklab, var(--text-strong) 80%, white 20%);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 8px 10px !important;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+}
+
+.calendar-weekday-separator {
+  grid-column: 1 / -1;
+  height: var(--month-divider-row-height);
+  min-height: var(--month-divider-row-height);
+  padding: 0;
+  margin: 0;
+  background: var(--ef-border-gradient);
+  pointer-events: none;
 }
 
 .weekday-cell:first-child {
-  border-top-left-radius: var(--pill-radius);
+  border-top-left-radius: var(--pill-radius) !important;
 }
-.weekday-cell:last-child {
-  border-top-right-radius: var(--pill-radius);
+.calendar-grid > :nth-child(7) {
+  border-top-right-radius: var(--pill-radius) !important;
 }
 .calendar-grid {
   display: grid;
+  width: 100%;
+  min-width: 0;
+  align-self: stretch;
+  justify-self: stretch;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 0;
-  border: 1px solid transparent;
+  grid-template-rows:
+    var(--month-weekday-row-height)
+    var(--month-divider-row-height)
+    repeat(6, minmax(var(--month-day-row-height), 1fr));
+  gap: 1px;
+  border: 2px solid transparent;
   background:
-    linear-gradient(var(--ef-surface), var(--ef-surface)) padding-box,
+    linear-gradient(rgba(4, 9, 22, 0.55), rgba(4, 9, 22, 0.55)) padding-box,
     var(--ef-border-gradient) border-box;
-  border-radius: 0 0 var(--pill-radius) var(--pill-radius);
+  border-radius: var(--pill-radius);
   overflow: hidden;
 }
 
 .day-cell {
-  min-height: 106px;
+  min-height: 0;
+  height: 100%;
   border-radius: 0 !important;
   border: 0 !important;
-  background: var(--calendar-cell-bg);
+  background: var(--calendar-month-cell-bg) !important;
   color: #edf4ff;
   text-align: left;
   padding: 8px !important;
@@ -1548,6 +1616,7 @@ body,
   display: grid;
   grid-template-rows: auto 1fr auto;
   position: relative;
+  box-shadow: none !important;
 }
 
 .day-cell:disabled {
@@ -1555,19 +1624,39 @@ body,
 }
 
 .calendar-grid > button.day-cell {
-  border: 2px solid transparent !important;
-  background:
-    linear-gradient(var(--calendar-cell-bg), var(--calendar-cell-bg)) padding-box,
-    var(--ef-border-gradient) border-box;
+  background: var(--calendar-month-cell-bg) !important;
+  box-shadow: none !important;
 }
 
-.calendar-grid > :nth-last-child(7),
-.calendar-grid > :nth-child(36) {
+.calendar-grid > button.day-cell:disabled {
+  background: var(--calendar-month-cell-bg) !important;
+}
+
+:root[data-theme="light"] .calendar-grid > button.day-cell,
+:root[data-theme="plain-light"] .calendar-grid > button.day-cell,
+:root[data-theme="galaxy"] .calendar-grid > button.day-cell,
+:root[data-theme="plain-dark"] .calendar-grid > button.day-cell,
+:root[data-theme="system"] .calendar-grid > button.day-cell,
+:root[data-theme="light"] .calendar-grid > button.day-cell:hover,
+:root[data-theme="plain-light"] .calendar-grid > button.day-cell:hover,
+:root[data-theme="galaxy"] .calendar-grid > button.day-cell:hover,
+:root[data-theme="plain-dark"] .calendar-grid > button.day-cell:hover,
+:root[data-theme="system"] .calendar-grid > button.day-cell:hover,
+:root[data-theme="light"] .calendar-grid > button.day-cell:disabled,
+:root[data-theme="plain-light"] .calendar-grid > button.day-cell:disabled,
+:root[data-theme="galaxy"] .calendar-grid > button.day-cell:disabled,
+:root[data-theme="plain-dark"] .calendar-grid > button.day-cell:disabled,
+:root[data-theme="system"] .calendar-grid > button.day-cell:disabled {
+  background: var(--calendar-month-cell-bg) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.calendar-grid > :nth-last-child(7) {
   border-bottom-left-radius: var(--pill-radius) !important;
 }
 
-.calendar-grid > :last-child,
-.calendar-grid > :nth-child(42) {
+.calendar-grid > :last-child {
   border-bottom-right-radius: var(--pill-radius) !important;
 }
 
@@ -1581,8 +1670,33 @@ body,
 }
 
 .day-cell.is-today {
-  outline: 2px solid rgba(255, 183, 77, 0.95);
-  outline-offset: 1px;
+  outline: 0;
+}
+
+:root[data-theme] .calendar-grid > button.day-cell.is-today {
+  background: rgba(8, 13, 24, 0.86) !important;
+  background-image: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme] .calendar-grid > button.day-cell.is-today:hover,
+:root[data-theme] .calendar-grid > button.day-cell.is-today:focus-visible,
+:root[data-theme] .calendar-grid > button.day-cell.is-today:active {
+  background: rgba(8, 13, 24, 0.86) !important;
+  background-image: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.calendar-grid > button.day-cell.is-today::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  border: 2px solid transparent;
+  border-image: var(--ef-border-gradient) 1;
+  z-index: 3;
 }
 
 .day-number {
@@ -1608,9 +1722,11 @@ body,
 
 .day-plan-stack {
   position: relative;
+  z-index: 4;
   height: 54px;
-  margin-left: 0;
-  margin-right: 0;
+  width: calc(100% + 16px);
+  margin-left: -8px;
+  margin-right: -8px;
   overflow: visible;
 }
 
@@ -1621,7 +1737,7 @@ body,
   align-items: center;
   border: 2px solid transparent;
   background:
-    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    linear-gradient(var(--calendar-month-cell-bg), var(--calendar-month-cell-bg)) padding-box,
     var(--plan-gradient, linear-gradient(135deg, color-mix(in oklab, var(--plan-color, #20c9a6) 82%, white 18%), color-mix(in oklab, var(--plan-color, #20c9a6) 70%, white 30%))) border-box;
   color: #dffaff;
   border-radius: 5px !important;
@@ -1677,6 +1793,11 @@ body,
 .day-plan-bar.is-continued-next {
   border-top-right-radius: 0 !important;
   border-bottom-right-radius: 0 !important;
+}
+
+
+.day-plan-bar.is-continued-prev.is-continued-next {
+  border-radius: 0 !important;
 }
 
 .day-plan-count {
@@ -2271,6 +2392,55 @@ body,
   letter-spacing: 0 !important;
 }
 
+.plan-invite-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.plan-invite-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.plan-invite-avatar {
+  flex: 0 0 auto;
+}
+
+.plan-invite-row .plan-invite-item {
+  flex: 0 0 auto;
+}
+
+.plan-invite-row .plan-invite-item.ef-toggle {
+  width: auto !important;
+  min-width: 0;
+}
+
+.plan-invite-person {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.plan-invite-name {
+  font-size: 0.82rem;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plan-invite-row .notification-chip {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
 .plan-recurrence-grid {
   display: grid;
   gap: 8px;
@@ -2331,15 +2501,18 @@ body,
 }
 
 @media (max-width: 760px) {
+  html,
   body,
   #root,
   .calendar-app {
     background: var(--ef-surface);
+    overflow-x: hidden;
   }
 
   .main-content {
     padding: 0px clamp(14px, 2.8vw, 38px) 85px;
     gap: 0;
+    overflow-x: hidden;
   }
 
   .main-content > .ef-main-header + .secondary-toolbar {
@@ -2359,8 +2532,9 @@ body,
   }
 
   .day-cell {
-    min-height: 72px;
-    padding: 3px;
+    min-height: 0;
+    height: 100%;
+    padding: 3px !important;
   }
 
   .day-number {
@@ -2371,9 +2545,23 @@ body,
     display: none;
   }
 
-  .weekday-row,
   .calendar-grid {
-    gap: 0;
+    width: calc(100% + 28px);
+    margin-left: -14px;
+    margin-right: -14px;
+    grid-template-rows:
+      var(--month-weekday-row-height)
+      var(--month-divider-row-height)
+      repeat(6, minmax(var(--month-day-row-height), 1fr));
+    gap: 1px;
+    border-radius: 0;
+  }
+
+  .weekday-cell:first-child,
+  .calendar-grid > :nth-child(7),
+  .calendar-grid > :nth-last-child(7),
+  .calendar-grid > :last-child {
+    border-radius: 0 !important;
   }
 
   .legend-grid {
@@ -2400,14 +2588,6 @@ body,
 
   .month-controls button {
     display: none;
-  }
-
-  .calendar-panel {
-    width: calc(100% + 28px);
-    margin-left: -14px;
-    margin-right: -14px;
-    border-radius: 0;
-    border: 0;
   }
 
   .cloud-actions {
@@ -2513,6 +2693,7 @@ body,
   }
 
   .day-plan-stack {
+    width: calc(100% + 6px);
     margin-left: -3px;
     margin-right: -3px;
     height: 49px;
