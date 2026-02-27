@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "780435474799",
+    "project_id": "enderfallcalender-42004",
+    "storage_bucket": "enderfallcalender-42004.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:780435474799:android:c8e07940da1af77592809a",
+        "android_client_info": {
+          "package_name": "com.enderfall.calendar"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAYEcIF-UcUIPNkFRM2ZXGQMUxnzt9lzQE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

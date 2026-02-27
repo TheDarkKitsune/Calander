@@ -266,6 +266,13 @@ Deno.serve(async (req) => {
         .in("id", disableIds);
     }
 
+    console.log("push-result", {
+      userId: record.user_id,
+      sent,
+      disableIds,
+      errors,
+    });
+
     return new Response(JSON.stringify({ sent, disabled: disableIds.length, errors }), {
       headers: { "Content-Type": "application/json" },
     });
