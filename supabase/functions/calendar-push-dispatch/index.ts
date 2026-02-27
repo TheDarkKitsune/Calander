@@ -205,17 +205,34 @@ Deno.serve(async (req) => {
     const queryRecordRaw = new URL(req.url).searchParams.get("record");
     const queryRecord = (() => {
       if (!queryRecordRaw) return null;
+
+      const candidates: string[] = [];
+      candidates.push(queryRecordRaw);
+      candidates.push(queryRecordRaw.replace(/\+/g, " "));
       try {
-        return JSON.parse(queryRecordRaw) as CalendarNotificationRecord;
+        candidates.push(decodeURIComponent(queryRecordRaw));
       } catch {
+        // ignore decode errors, next candidate might still work
+      }
+      try {
+        candidates.push(decodeURIComponent(queryRecordRaw.replace(/\+/g, "%20")));
+      } catch {
+        // ignore decode errors, next candidate might still work
+      }
+
+      for (const candidate of candidates) {
         try {
-          // pg_net-style query encoding can leave '+' as spaces between tokens.
-          const normalized = queryRecordRaw.replace(/\+/g, " ");
-          return JSON.parse(normalized) as CalendarNotificationRecord;
+          return JSON.parse(candidate) as CalendarNotificationRecord;
         } catch {
-          return null;
+          // try next variant
         }
       }
+
+      console.log("push-skip", {
+        reason: "Unable to parse query record",
+        rawSample: queryRecordRaw.slice(0, 180),
+      });
+      return null;
     })();
     const record =
       ((payload as WebhookPayload | null)?.record ?? null) ??
