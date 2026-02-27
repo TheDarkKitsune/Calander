@@ -188,8 +188,25 @@ Deno.serve(async (req) => {
       }
     }
 
-    const payload = (await req.json()) as WebhookPayload | CalendarNotificationRecord;
-    const record = (payload as WebhookPayload).record ?? (payload as CalendarNotificationRecord);
+    let payload: WebhookPayload | CalendarNotificationRecord | null = null;
+    try {
+      payload = (await req.json()) as WebhookPayload | CalendarNotificationRecord;
+    } catch {
+      payload = null;
+    }
+    const queryRecordRaw = new URL(req.url).searchParams.get("record");
+    const queryRecord = (() => {
+      if (!queryRecordRaw) return null;
+      try {
+        return JSON.parse(queryRecordRaw) as CalendarNotificationRecord;
+      } catch {
+        return null;
+      }
+    })();
+    const record =
+      ((payload as WebhookPayload | null)?.record ?? null) ??
+      ((payload as CalendarNotificationRecord | null) ?? null) ??
+      queryRecord;
 
     if (!record?.user_id || !record?.id) {
       return new Response(JSON.stringify({ skipped: true, reason: "Missing record/user_id" }), {
