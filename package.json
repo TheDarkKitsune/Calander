@@ -12,17 +12,19 @@
     "build:tauri": "tauri build",
     "dev:web": "vite",
     "build:web": "vite build",
-    "cap:sync": "npm run build:web && cap sync",
+    "cap:sync": "pnpm run build:web && cap sync",
     "cap:add:android": "cap add android",
     "cap:add:ios": "cap add ios",
     "cap:open:android": "cap open android",
     "cap:open:ios": "cap open ios",
-    "cap:run:android": "npm run build:web && cap run android"
+    "cap:run:android": "pnpm run build:web && cap run android"
   },
   "dependencies": {
     "@capacitor/android": "^8.1.0",
     "@capacitor/core": "^8.1.0",
     "@capacitor/ios": "^8.1.0",
+    "@capacitor/local-notifications": "^8.0.1",
+    "@capacitor/push-notifications": "^8.0.1",
     "@enderfall/runtime": "workspace:*",
     "@enderfall/ui": "workspace:*",
     "@supabase/supabase-js": "^2.45.4",

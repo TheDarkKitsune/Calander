@@ -497,6 +497,43 @@ export type CloudNotification = {
   created_at: string;
 };
 
+export type PushPlatform = "android" | "ios" | "web";
+
+export const registerPushToken = async (
+  userId: string,
+  token: string,
+  platform: PushPlatform,
+  deviceLabel: string | null = null
+) => {
+  if (!supabase) return { error: "Cloud is not configured." };
+  const normalizedToken = token.trim();
+  if (!normalizedToken) return { error: "Push token is empty." };
+  const { error } = await supabase.from("calendar_push_tokens").upsert(
+    {
+      user_id: userId,
+      token: normalizedToken,
+      platform,
+      device_label: deviceLabel,
+      enabled: true,
+      last_seen_at: new Date().toISOString(),
+    },
+    { onConflict: "token" }
+  );
+  return { error: error?.message ?? null };
+};
+
+export const disablePushToken = async (userId: string, token: string) => {
+  if (!supabase) return { error: "Cloud is not configured." };
+  const normalizedToken = token.trim();
+  if (!normalizedToken) return { error: null as string | null };
+  const { error } = await supabase
+    .from("calendar_push_tokens")
+    .update({ enabled: false, last_seen_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .eq("token", normalizedToken);
+  return { error: error?.message ?? null };
+};
+
 export const upsertSharedGroups = async (ownerId: string, groups: SharedGroupPayload[]) => {
   if (!supabase) return { error: "Cloud is not configured." };
   if (groups.length === 0) return { error: null as string | null };

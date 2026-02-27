@@ -19,6 +19,8 @@ import {
   markNotificationRead,
   deleteNotification,
   clearNotificationsByIds,
+  registerPushToken,
+  disablePushToken,
   onCalendarRealtimeChange,
   onCloudFriendStatusChange,
   onCloudAuthStateChange,
@@ -123,6 +125,8 @@ const PLAN_STORAGE_KEY = "enderfall-calander-plans-v1";
 const CLOUD_ROOM_KEY = "enderfall-calander-cloud-room";
 const CLOUD_AUTO_SYNC_KEY = "enderfall-calander-cloud-auto-sync";
 const HIDE_OUTSIDE_MONTH_DAYS_KEY = "enderfall-calander-hide-outside-month-days";
+const NOTIFICATIONS_ENABLED_KEY = "enderfall-calander-notifications-enabled";
+const PUSH_TOKEN_STORAGE_KEY = "enderfall-calander-push-token";
 const THEME_STORAGE_KEY = "themeMode";
 const APP_ID = "enderfall-calander";
 const isMobilePlatform = () => {
@@ -692,9 +696,15 @@ export default function App() {
     })
   );
   const [animationsEnabled, setAnimationsEnabled] = useState(true);
+  const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    const raw = localStorage.getItem(NOTIFICATIONS_ENABLED_KEY);
+    return raw === null ? true : raw === "true";
+  });
   const sharedThemeUpdatedAtRef = useRef<number>(0);
   const sharedThemeApplyRef = useRef<ThemeMode | null>(null);
   const sharedAnimationsApplyRef = useRef<boolean | null>(null);
+  const sharedNotificationsApplyRef = useRef<boolean | null>(null);
   const sharedThemeAllowed = useMemo(
     () => new Set<ThemeMode>(["system", "galaxy", "light", "plain-light", "plain-dark"]),
     []
@@ -786,6 +796,9 @@ export default function App() {
   const dayTimelineRef = useRef<HTMLDivElement | null>(null);
   const activityListRef = useRef<HTMLDivElement | null>(null);
   const activityAutoReadPendingRef = useRef<Set<string>>(new Set());
+  const seenActivityNotificationIdsRef = useRef<Set<string>>(new Set());
+  const seenPendingInviteIdsRef = useRef<Set<string>>(new Set());
+  const systemNotificationHydratedRef = useRef(false);
   const socialUserId = isUuid(cloudUser?.id) ? (cloudUser?.id ?? null) : null;
 
   const storeRef = useRef(store);
@@ -1021,6 +1034,124 @@ export default function App() {
     document.documentElement.setAttribute("data-reduce-motion", animationsEnabled ? "false" : "true");
   }, [animationsEnabled]);
   useEffect(() => {
+    localStorage.setItem(NOTIFICATIONS_ENABLED_KEY, notificationsEnabled ? "true" : "false");
+  }, [notificationsEnabled]);
+  useEffect(() => {
+    if (!notificationsEnabled || typeof window === "undefined") return;
+    const requestPermission = async () => {
+      const capacitor = (window as typeof window & {
+        Capacitor?: {
+          isNativePlatform?: () => boolean;
+          Plugins?: Record<string, unknown>;
+        };
+      }).Capacitor;
+      if (capacitor?.isNativePlatform?.()) {
+        try {
+          const localNotificationsPlugin = capacitor.Plugins?.LocalNotifications as
+            | {
+                checkPermissions?: () => Promise<{ display?: string }>;
+                requestPermissions?: () => Promise<{ display?: string }>;
+              }
+            | undefined;
+          if (localNotificationsPlugin?.checkPermissions && localNotificationsPlugin?.requestPermissions) {
+            const status = await localNotificationsPlugin.checkPermissions();
+            if (status.display === "prompt" || status.display === "prompt-with-rationale") {
+              await localNotificationsPlugin.requestPermissions();
+            }
+          }
+        } catch {
+          // Ignore unavailable plugin/platform errors.
+        }
+        return;
+      }
+      try {
+        if ("Notification" in window && Notification.permission === "default") {
+          await Notification.requestPermission();
+        }
+      } catch {
+        // Ignore browser notification errors.
+      }
+    };
+    void requestPermission();
+  }, [notificationsEnabled]);
+  useEffect(() => {
+    if (!socialUserId || !notificationsEnabled || typeof window === "undefined") return;
+    const capacitor = (window as typeof window & {
+      Capacitor?: {
+        isNativePlatform?: () => boolean;
+        getPlatform?: () => string;
+        Plugins?: Record<string, unknown>;
+      };
+    }).Capacitor;
+    if (!capacitor?.isNativePlatform?.()) return;
+
+    const pushPlugin = capacitor.Plugins?.PushNotifications as
+      | {
+          checkPermissions?: () => Promise<{ receive?: string }>;
+          requestPermissions?: () => Promise<{ receive?: string }>;
+          register?: () => Promise<void>;
+          addListener?: (
+            eventName: "registration" | "registrationError",
+            listener: (value: { value?: string; error?: unknown }) => void
+          ) => Promise<{ remove: () => Promise<void> }>;
+        }
+      | undefined;
+    if (!pushPlugin?.checkPermissions || !pushPlugin?.requestPermissions || !pushPlugin?.register || !pushPlugin?.addListener) return;
+    const checkPermissions = pushPlugin.checkPermissions;
+    const requestPermissions = pushPlugin.requestPermissions;
+    const register = pushPlugin.register;
+    const addListener = pushPlugin.addListener;
+
+    let disposed = false;
+    let registrationHandle: { remove: () => Promise<void> } | null = null;
+    let registrationErrorHandle: { remove: () => Promise<void> } | null = null;
+
+    const registerForPush = async () => {
+      const registrationListener = await addListener("registration", ({ value }) => {
+        if (disposed) return;
+        const token = String(value ?? "").trim();
+        if (!token) return;
+        localStorage.setItem(PUSH_TOKEN_STORAGE_KEY, token);
+        const platform = capacitor.getPlatform?.() === "ios" ? "ios" : "android";
+        void registerPushToken(
+          socialUserId,
+          token,
+          platform,
+          typeof navigator !== "undefined" ? navigator.userAgent.slice(0, 250) : null
+        );
+      });
+      registrationHandle = registrationListener;
+
+      const errorListener = await addListener("registrationError", () => {
+        // Keep silent; user can still receive in-app notifications.
+      });
+      registrationErrorHandle = errorListener;
+
+      const permission = await checkPermissions();
+      if (permission.receive === "prompt") {
+        const requested = await requestPermissions();
+        if (requested.receive !== "granted") return;
+      } else if (permission.receive !== "granted") {
+        return;
+      }
+      await register();
+    };
+
+    void registerForPush();
+
+    return () => {
+      disposed = true;
+      if (registrationHandle) void registrationHandle.remove();
+      if (registrationErrorHandle) void registrationErrorHandle.remove();
+    };
+  }, [notificationsEnabled, socialUserId]);
+  useEffect(() => {
+    if (notificationsEnabled || !socialUserId || typeof window === "undefined") return;
+    const token = localStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
+    if (!token) return;
+    void disablePushToken(socialUserId, token);
+  }, [notificationsEnabled, socialUserId]);
+  useEffect(() => {
     localStorage.setItem(HIDE_OUTSIDE_MONTH_DAYS_KEY, hideOutsideMonthDays ? "true" : "false");
   }, [hideOutsideMonthDays]);
   useEffect(() => {
@@ -1041,6 +1172,10 @@ export default function App() {
         if (typeof prefs.animationsEnabled === "boolean" && prefs.animationsEnabled !== animationsEnabled) {
           sharedAnimationsApplyRef.current = prefs.animationsEnabled;
           setAnimationsEnabled(prefs.animationsEnabled);
+        }
+        if (typeof prefs.notificationsEnabled === "boolean" && prefs.notificationsEnabled !== notificationsEnabled) {
+          sharedNotificationsApplyRef.current = prefs.notificationsEnabled;
+          setNotificationsEnabled(prefs.notificationsEnabled);
         }
       })
       .catch(() => undefined);
@@ -1075,6 +1210,18 @@ export default function App() {
   }, [animationsEnabled]);
   useEffect(() => {
     if (!runtimeIsTauri) return;
+    if (sharedNotificationsApplyRef.current === notificationsEnabled) {
+      sharedNotificationsApplyRef.current = null;
+      return;
+    }
+    writeSharedPreferences({ notificationsEnabled })
+      .then((prefs) => {
+        if (prefs?.updatedAt) sharedThemeUpdatedAtRef.current = prefs.updatedAt;
+      })
+      .catch(() => undefined);
+  }, [notificationsEnabled]);
+  useEffect(() => {
+    if (!runtimeIsTauri) return;
     const interval = window.setInterval(async () => {
       try {
         const prefs = await readSharedPreferences();
@@ -1093,12 +1240,16 @@ export default function App() {
           sharedAnimationsApplyRef.current = prefs.animationsEnabled;
           setAnimationsEnabled(prefs.animationsEnabled);
         }
+        if (typeof prefs.notificationsEnabled === "boolean" && prefs.notificationsEnabled !== notificationsEnabled) {
+          sharedNotificationsApplyRef.current = prefs.notificationsEnabled;
+          setNotificationsEnabled(prefs.notificationsEnabled);
+        }
       } catch {
         // ignore polling errors
       }
     }, 3000);
     return () => window.clearInterval(interval);
-  }, [animationsEnabled, sharedThemeAllowed, themeMode]);
+  }, [animationsEnabled, notificationsEnabled, sharedThemeAllowed, themeMode]);
   useEffect(() => {
     if (!runtimeIsTauri || isMobileClient) return;
     const syncFromHub = async () => {
@@ -2604,6 +2755,12 @@ export default function App() {
 
   const signOut = async () => {
     setAuthBusy(true);
+    if (socialUserId) {
+      const token = localStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
+      if (token) {
+        await disablePushToken(socialUserId, token);
+      }
+    }
     const { error } = await signOutCloud();
     setAuthBusy(false);
     setAuthMessage(error ? `Sign out failed: ${error}` : "Signed out.");
@@ -2844,6 +3001,79 @@ export default function App() {
     () => activityNotifications.filter((notification) => !notification.is_read).length,
     [activityNotifications]
   );
+
+  const sendSystemNotification = useCallback(
+    async (title: string, body: string, tag: string) => {
+      if (!notificationsEnabled) return;
+      if (typeof window === "undefined") return;
+
+      const capacitor = (window as typeof window & {
+        Capacitor?: {
+          isNativePlatform?: () => boolean;
+        };
+      }).Capacitor;
+
+      if (capacitor?.isNativePlatform?.()) {
+        // Native platforms are handled by server push (FCM/APNs), not local browser notifications.
+        return;
+      }
+
+      try {
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification(title, {
+            body,
+            tag,
+            icon: "/brand/enderfall-mark.png",
+          });
+        }
+      } catch {
+        // Ignore browser notification errors.
+      }
+    },
+    [notificationsEnabled]
+  );
+
+  useEffect(() => {
+    if (!socialUserId) {
+      seenActivityNotificationIdsRef.current = new Set();
+      seenPendingInviteIdsRef.current = new Set();
+      systemNotificationHydratedRef.current = false;
+      return;
+    }
+
+    const currentActivityIds = new Set(activityNotifications.map((item) => item.id));
+    const currentInviteIds = new Set(pendingIncomingPlanInvites.map((item) => item.id));
+
+    if (!systemNotificationHydratedRef.current) {
+      seenActivityNotificationIdsRef.current = currentActivityIds;
+      seenPendingInviteIdsRef.current = currentInviteIds;
+      systemNotificationHydratedRef.current = true;
+      return;
+    }
+
+    const newActivity = activityNotifications.filter(
+      (item) => !seenActivityNotificationIdsRef.current.has(item.id) && !item.is_read
+    );
+    const newInvites = pendingIncomingPlanInvites.filter(
+      (item) => !seenPendingInviteIdsRef.current.has(item.id)
+    );
+
+    seenActivityNotificationIdsRef.current = currentActivityIds;
+    seenPendingInviteIdsRef.current = currentInviteIds;
+
+    for (const notification of newActivity) {
+      void sendSystemNotification("Calendar update", notification.body || "You have a new update.", `activity-${notification.id}`);
+    }
+
+    for (const invite of newInvites) {
+      const relatedPlan = allPlans.find((plan) => plan.id === invite.plan_id);
+      const inviteTitle = relatedPlan?.name ? `Plan invite: ${relatedPlan.name}` : "New plan invite";
+      const inviteBody = relatedPlan
+        ? `${relatedPlan.fromDate} to ${relatedPlan.toDate}`
+        : "You received a new invite.";
+      void sendSystemNotification(inviteTitle, inviteBody, `invite-${invite.id}`);
+    }
+  }, [socialUserId, activityNotifications, pendingIncomingPlanInvites, allPlans, sendSystemNotification]);
   const unreadInviteCount = useMemo(
     () => pendingIncomingPlanInvites.length,
     [pendingIncomingPlanInvites]
@@ -2954,9 +3184,16 @@ export default function App() {
                   items={headerUserItems}
                 />
               ) : (
-                <Button type="button" variant="primary" onClick={() => setAuthModalOpen(true)}>
-                  Login
-                </Button>
+                <>
+                  {isMobileViewport ? (
+                    <Button type="button" variant="ghost" onClick={() => setPreferencesOpen(true)}>
+                      Preferences
+                    </Button>
+                  ) : null}
+                  <Button type="button" variant="primary" onClick={() => setAuthModalOpen(true)}>
+                    Login
+                  </Button>
+                </>
               )}
             </div>
           }
@@ -3788,6 +4025,11 @@ export default function App() {
           animationsEnabled={animationsEnabled}
           onAnimationsChange={setAnimationsEnabled}
         >
+          <Toggle
+            checked={notificationsEnabled}
+            onChange={(event) => setNotificationsEnabled(event.target.checked)}
+            label="Enable notifications"
+          />
           <Toggle
             checked={hideOutsideMonthDays}
             onChange={(event) => setHideOutsideMonthDays(event.target.checked)}
