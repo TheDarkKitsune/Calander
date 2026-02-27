@@ -1233,21 +1233,24 @@ body,
 
 .footer-notification-badge {
   position: absolute;
-  top: -6px;
-  right: -6px;
-  min-width: 18px;
-  height: 18px;
+  top: -8px;
+  right: -8px;
+  min-width: 20px;
+  height: 20px;
   border-radius: 999px;
-  border: 1px solid rgba(95, 157, 255, 0.65);
-  background: rgba(95, 157, 255, 0.96);
-  color: #041128;
-  font-size: 0.66rem;
-  font-weight: 800;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--ef-button-surface), var(--ef-button-surface)) padding-box,
+    linear-gradient(135deg, rgba(255, 255, 255, 0.38), rgba(255, 255, 255, 0.2)) border-box;
+  color: var(--ef-button-text);
+  font-size: 0.68rem;
+  font-weight: 700;
   line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 4px;
+  padding: 0 6px;
+  pointer-events: none;
 }
 
 .manager-header {
@@ -1661,12 +1664,52 @@ body,
 }
 
 .day-cell.is-other-month {
-  opacity: 0.6;
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.8) !important;
+}
+
+.day-cell.is-other-month .day-number,
+.day-cell.is-other-month .day-caption,
+.day-cell.is-other-month .day-plan-count {
+  color: rgba(148, 156, 168, 0.62);
+  filter: blur(0.5px);
+}
+
+.day-cell.is-other-month .day-plan-bar {
+  opacity: 0.62;
+  filter: saturate(0.72) brightness(0.72);
+}
+
+.day-cell.is-other-month .day-plan-bar.bridges-current-month {
+  opacity: 1;
+  filter: none;
+}
+
+.day-cell.is-other-month .day-plan-name,
+.day-cell.is-other-month .day-plan-icon {
+  color: rgba(148, 156, 168, 0.62);
+}
+
+.day-cell.is-other-month .day-plan-bar.bridges-current-month .day-plan-name,
+.day-cell.is-other-month .day-plan-bar.bridges-current-month .day-plan-icon {
+  color: #dffaff;
+}
+
+.calendar-grid > button.day-cell.is-other-month,
+:root[data-theme="light"] .calendar-grid > button.day-cell.is-other-month,
+:root[data-theme="plain-light"] .calendar-grid > button.day-cell.is-other-month,
+:root[data-theme="galaxy"] .calendar-grid > button.day-cell.is-other-month,
+:root[data-theme="plain-dark"] .calendar-grid > button.day-cell.is-other-month,
+:root[data-theme="system"] .calendar-grid > button.day-cell.is-other-month,
+:root[data-theme] .calendar-grid > button.day-cell.is-other-month {
+  background: rgba(0, 0, 0, 0.8) !important;
+  background-image: none !important;
+  box-shadow: none !important;
 }
 
 .day-cell-placeholder {
   pointer-events: none;
-  background: color-mix(in oklab, var(--calendar-cell-bg) 92%, black 8%);
+  background: rgba(0, 0, 0, 0.8) !important;
 }
 
 .day-cell.is-today {
@@ -1674,7 +1717,7 @@ body,
 }
 
 :root[data-theme] .calendar-grid > button.day-cell.is-today {
-  background: rgba(8, 13, 24, 0.86) !important;
+  background: rgba(0, 0, 0, 0.5) !important;
   background-image: none !important;
   border: 0 !important;
   box-shadow: none !important;
@@ -1683,7 +1726,7 @@ body,
 :root[data-theme] .calendar-grid > button.day-cell.is-today:hover,
 :root[data-theme] .calendar-grid > button.day-cell.is-today:focus-visible,
 :root[data-theme] .calendar-grid > button.day-cell.is-today:active {
-  background: rgba(8, 13, 24, 0.86) !important;
+  background: rgba(0, 0, 0, 0.6) !important;
   background-image: none !important;
   border: 0 !important;
   box-shadow: none !important;
@@ -2497,6 +2540,10 @@ body,
     overflow-x: hidden;
   }
 
+  .calendar-app {
+    padding-top: max(0px, env(safe-area-inset-top));
+  }
+
   .main-content {
     padding: 0px clamp(14px, 2.8vw, 38px) 85px;
     gap: 0;
@@ -2505,6 +2552,14 @@ body,
 
   .main-content > .ef-main-header + .secondary-toolbar {
     margin-top: 0 !important;
+  }
+
+    .ef-main-header {
+    border-radius: 0 0 18px 18px;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    padding: 4px;
   }
 
   .toolbar {
@@ -2648,16 +2703,71 @@ body,
   }
 
   .planner-footer .ef-footer-actions {
-    justify-content: center;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    align-items: center;
+    justify-items: center;
+    gap: 6px;
     min-height: 58px;
     width: 100%;
     max-width: none;
+    padding: 0 6px;
+    position: relative;
+  }
+
+  .planner-footer .footer-side-button,
+  .planner-footer .create-plan-button {
+    position: static;
+    left: auto;
+    top: auto;
+    transform: none;
+    margin: 0;
+  }
+
+  .planner-footer .footer-side-notifications {
+    grid-column: 1;
+  }
+
+  .planner-footer .footer-side-left {
+    grid-column: 2;
   }
 
   .planner-footer .create-plan-button {
-    left: 50%;
-    top: 50%;
-    transform: translate(-50%, -50%);
+    grid-column: 3;
+    width: 72px;
+    min-width: 72px;
+    height: 72px;
+    border-radius: 18px !important;
+  }
+
+  .planner-footer .footer-side-right {
+    grid-column: 4;
+  }
+
+  .planner-footer .footer-side-plans {
+    grid-column: 5;
+  }
+
+  .planner-footer .footer-side-button {
+    position: relative;
+    width: 54px;
+    min-width: 54px;
+    height: 54px;
+    overflow: visible !important;
+  }
+
+  .planner-footer .create-plan-icon {
+    width: 52px;
+    height: 52px;
+  }
+
+  .planner-footer .create-plan-icon svg {
+    width: 52px;
+    height: 52px;
+  }
+
+  .planner-footer .footer-side-icon {
+    font-size: 1.05rem;
   }
 
   .planner-footer.ef-floating-footer {
@@ -2674,9 +2784,16 @@ body,
     border-radius: 18px 18px 0 0;
     width: 100%;
     max-width: none;
-    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    padding: 6px 8px max(8px, env(safe-area-inset-bottom));
+    border-bottom: none;
+    border-left: none;
+    border-right: none;
   }
 
+  .planner-footer .footer-notification-badge {
+    top: -8px;
+    right: -8px;
+  }
 
   .plan-time-row,
   .recurrence-count-row {
@@ -2693,6 +2810,34 @@ body,
     margin-left: -3px;
     margin-right: -3px;
     height: 49px;
+  }
+}
+
+@media (max-width: 390px) {
+  .planner-footer .ef-footer-actions {
+    gap: 4px;
+    padding: 0 4px;
+  }
+
+  .planner-footer .footer-side-button {
+    width: 50px;
+    min-width: 50px;
+    height: 50px;
+  }
+
+  .planner-footer .create-plan-button {
+    width: 66px;
+    min-width: 66px;
+    height: 66px;
+  }
+
+  .planner-footer .footer-notification-badge {
+    top: -7px;
+    right: -7px;
+    min-width: 19px;
+    height: 19px;
+    padding: 0 5px;
+    font-size: 0.66rem;
   }
 }
 

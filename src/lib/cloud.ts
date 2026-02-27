@@ -1,4 +1,9 @@
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
+import {
+  hasAuthOverrideTokens,
+  readAuthOverrideTokens,
+  readSharedAuthOverrideTokens,
+} from "@enderfall/runtime";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -52,33 +57,23 @@ const supabase: SupabaseClient | null = isCloudConfigured
 // Keep invite sync independent from notification writes.
 let canWriteCalendarNotifications = false;
 
-type OverrideTokens = {
-  access_token?: string;
-  refresh_token?: string;
-};
-
-const AUTH_OVERRIDE_KEYS = [
-  "calander-auth-override",
-  "calendar-auth-override",
-  "enderfall-calander-auth-override",
-  "appbrowser-auth-override",
-];
-
-const readOverrideTokens = (): OverrideTokens | null => {
-  if (typeof window === "undefined") return null;
-  for (const key of AUTH_OVERRIDE_KEYS) {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) continue;
-    try {
-      const parsed = JSON.parse(raw) as OverrideTokens;
-      if (parsed.access_token && parsed.refresh_token) {
-        return parsed;
-      }
-    } catch {
-      // ignore malformed override payloads
-    }
+const readOverrideTokens = async () => {
+  const local = readAuthOverrideTokens();
+  if (local?.access_token && local.refresh_token) {
+    return local;
+  }
+  const shared = await readSharedAuthOverrideTokens();
+  if (shared?.access_token && shared.refresh_token) {
+    return shared;
   }
   return null;
+};
+
+export const hasCloudOverrideTokens = () => hasAuthOverrideTokens();
+export const hasAnyCloudOverrideTokens = async () => {
+  if (hasAuthOverrideTokens()) return true;
+  const shared = await readSharedAuthOverrideTokens();
+  return Boolean(shared?.access_token && shared.refresh_token);
 };
 
 export type CloudRecord = {
@@ -119,7 +114,7 @@ export const syncCloudSessionFromOverride = async () => {
   if (!supabase) {
     return { user: null as User | null, error: "Cloud is not configured." };
   }
-  const tokens = readOverrideTokens();
+  const tokens = await readOverrideTokens();
   if (!tokens?.access_token || !tokens.refresh_token) {
     return { user: null as User | null, error: null as string | null };
   }

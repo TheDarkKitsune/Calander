@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { Button, Dropdown, FloatingFooter, Input, MainHeader, Modal, Panel, PreferencesModal, SideMenu, SideMenuSubmenu, Toggle, applyTheme, getStoredTheme } from "@enderfall/ui";
 import { FaBell, FaCircle, FaEdit, FaList, FaPen, FaTrashAlt, FaUserFriends, FaUsers } from "react-icons/fa";
 import { FaInfinity } from "react-icons/fa6";
-import { readSharedPreferences, refreshLaunchToken, writeSharedPreferences, type LaunchToken, isTauri as runtimeIsTauri } from "@enderfall/runtime";
+import { readSharedPreferences, writeSharedPreferences, isTauri as runtimeIsTauri } from "@enderfall/runtime";
 import {
   createCloudRoom,
   getCloudUser,
@@ -31,6 +31,7 @@ import {
   signInCloud,
   signOutCloud,
   signUpCloud,
+  hasAnyCloudOverrideTokens,
   syncCloudSessionFromOverride,
   syncSharedPlanInvites,
   upsertSharedPlans,
@@ -698,8 +699,10 @@ export default function App() {
     () => new Set<ThemeMode>(["system", "galaxy", "light", "plain-light", "plain-dark"]),
     []
   );
-  const [launchToken, setLaunchToken] = useState<LaunchToken | null>(null);
   const [isMobileClient] = useState<boolean>(() => isMobilePlatform());
+  const [isMobileViewport, setIsMobileViewport] = useState<boolean>(() =>
+    typeof window !== "undefined" ? window.matchMedia("(max-width: 760px)").matches : false
+  );
 
   const [cloudRoomDraft, setCloudRoomDraft] = useState(() => localStorage.getItem(CLOUD_ROOM_KEY) ?? "");
   const [cloudRoomId, setCloudRoomId] = useState(() => localStorage.getItem(CLOUD_ROOM_KEY) ?? "");
@@ -1098,20 +1101,21 @@ export default function App() {
   }, [animationsEnabled, sharedThemeAllowed, themeMode]);
   useEffect(() => {
     if (!runtimeIsTauri || isMobileClient) return;
-    let active = true;
-    const refresh = async () => {
-      const token = await refreshLaunchToken(APP_ID);
-      if (!active) return;
-      setLaunchToken(token);
+    const syncFromHub = async () => {
+      if (await hasAnyCloudOverrideTokens()) {
+        await syncCloudSessionFromOverride();
+        return;
+      }
+      await signOutCloud();
+      setCloudUser(null);
+      setCloudProfileAvatarUrl(null);
+      setAuthMessage("");
     };
-    void refresh();
+    void syncFromHub();
     const interval = window.setInterval(() => {
-      void refresh();
-    }, 5 * 60 * 1000);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
+      void syncFromHub();
+    }, 10 * 1000);
+    return () => window.clearInterval(interval);
   }, [isMobileClient]);
 
   useEffect(() => {
@@ -1138,7 +1142,7 @@ export default function App() {
       active = false;
       unsubscribe();
     };
-  }, [isMobileClient, launchToken]);
+  }, [isMobileClient]);
 
   useEffect(() => {
     if (!socialUserId) {
@@ -1221,6 +1225,15 @@ export default function App() {
       setSelectedPersonId(store.people[0].id);
     }
   }, [selectedPersonId, store.people]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const media = window.matchMedia("(max-width: 760px)");
+    const update = () => setIsMobileViewport(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
 
   useEffect(() => {
     if (!selfPersonId) return;
@@ -2764,9 +2777,9 @@ export default function App() {
   const syncMessageClass = syncState === "error" ? "cloud-status is-error" : "cloud-status";
   const currentMember = cloudUser ? roomMembers.find((member) => member.user_id === cloudUser.id) ?? null : null;
   const isRoomOwner = currentMember?.role === "owner";
-  const authDisplayName = launchToken?.displayName ?? launchToken?.email?.split("@")[0] ?? cloudUser?.email?.split("@")[0] ?? "User";
+  const authDisplayName = cloudUser?.email?.split("@")[0] ?? "User";
   const authAvatarFallback = authDisplayName.slice(0, 1).toUpperCase();
-  const authAvatarUrl = launchToken?.avatarUrl ?? cloudProfileAvatarUrl ?? cloudUser?.avatarUrl ?? null;
+  const authAvatarUrl = cloudProfileAvatarUrl ?? cloudUser?.avatarUrl ?? null;
   const planModalMessageIsError = useMemo(
     () => (planModalMessage ? !/created|updated|generated/i.test(planModalMessage) : false),
     [planModalMessage]
@@ -2909,6 +2922,16 @@ export default function App() {
     },
   ];
 
+  const headerUserItems = [
+    ...(isMobileViewport
+      ? [
+          { label: "Preferences", onClick: () => { setPreferencesOpen(true); setMenuOpen(null); } },
+        ]
+      : []),
+    { label: "Account", onClick: () => setAuthModalOpen(true) },
+    ...(cloudUser ? [{ label: "Logout", onClick: () => void signOut() }] : []),
+  ];
+
   return (
     <div className="calendar-app">
       <main className="main-content">
@@ -2922,16 +2945,13 @@ export default function App() {
           onCloseMenu={() => setMenuOpen(null)}
           actions={
             <div className="header-actions">
-              {launchToken || cloudUser ? (
+              {cloudUser ? (
                 <Dropdown
                   variant="user"
                   name={authDisplayName}
                   avatarUrl={authAvatarUrl}
                   avatarFallback={authAvatarFallback}
-                  items={[
-                    { label: "Account", onClick: () => setAuthModalOpen(true) },
-                    ...(cloudUser ? [{ label: "Logout", onClick: () => void signOut() }] : []),
-                  ]}
+                  items={headerUserItems}
                 />
               ) : (
                 <Button type="button" variant="primary" onClick={() => setAuthModalOpen(true)}>
@@ -3052,6 +3072,10 @@ export default function App() {
                 }
                 const runDays = runEndIndex - dayIndex + 1;
                 const runEndKey = toKeyDate(calendarDays[runEndIndex]);
+                const bridgesIntoCurrentMonth =
+                  isOtherMonth &&
+                  runEndIndex > dayIndex &&
+                  calendarDays[runEndIndex].getMonth() === monthAnchor.getMonth();
                 const hasNext = isDateInRange(shiftKeyDate(runEndKey, 1), plan.fromDate, plan.toDate);
                 const endsOnRunEnd = runEndKey === plan.toDate;
                 const runEndPctRaw = plan.allDay || !endsOnRunEnd ? 100 : (timeToMinutes(plan.toTime) / (24 * 60)) * 100;
@@ -3083,7 +3107,7 @@ export default function App() {
                   top: `${lane * 17}px`,
                   ...getPlanPillStyle(plan, planBaseColor, participantStripeColors),
                 };
-                return [{ plan, hasPrev, hasNext, segmentStyle, groupIcon }];
+                return [{ plan, hasPrev, hasNext, segmentStyle, groupIcon, bridgesIntoCurrentMonth }];
               });
               const meta = status !== "none" ? STATUS_LOOKUP[status] : null;
               const isToday = keyDate === toKeyDate(new Date());
@@ -3100,10 +3124,10 @@ export default function App() {
                   <span className="day-number">{day.getDate()}</span>
                   {status === "unpaid-leave" ? <span className="day-star">*</span> : null}
                   <div className="day-plan-stack">
-                    {visiblePlanSegments.map(({ plan, hasPrev, hasNext, segmentStyle, groupIcon }) => (
+                    {visiblePlanSegments.map(({ plan, hasPrev, hasNext, segmentStyle, groupIcon, bridgesIntoCurrentMonth }) => (
                       <span
                         key={plan.id}
-                        className={`day-plan-bar ${hasPrev ? "is-continued-prev" : ""} ${hasNext ? "is-continued-next" : ""}`}
+                        className={`day-plan-bar ${hasPrev ? "is-continued-prev" : ""} ${hasNext ? "is-continued-next" : ""} ${bridgesIntoCurrentMonth ? "bridges-current-month" : ""}`}
                         style={segmentStyle}
                         title={plan.name}
                         onClick={(event) => openPlanDetailsFromPill(event, plan.id)}
@@ -3718,16 +3742,11 @@ export default function App() {
         <Modal
           isOpen={authModalOpen}
           title="Account"
-          subtitle={launchToken ? "Connected via Enderfall Hub" : "Sign in or create an account"}
+          subtitle="Sign in or create an account"
           size="default"
           onClose={() => setAuthModalOpen(false)}
         >
           <div className="ef-modal-form">
-            {launchToken ? (
-              <div className="auth-state">
-                <p className="cloud-meta">Hub user: {launchToken.displayName ?? launchToken.email ?? launchToken.userId}</p>
-              </div>
-            ) : null}
             {cloudUser ? (
               <div className="auth-state">
                 <p className="cloud-meta">Signed in as {cloudUser.email ?? cloudUser.id}</p>
@@ -4127,9 +4146,7 @@ export default function App() {
                   <p className="cloud-meta">
                     {cloudUser
                       ? "No friends yet."
-                      : launchToken
-                        ? "Hub connected. Open Account and sign in once to load Supabase friends."
-                        : "Sign in to load friends."}
+                      : "Sign in to load friends."}
                   </p>
                 )}
               </div>
