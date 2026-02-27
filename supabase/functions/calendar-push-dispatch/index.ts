@@ -24,6 +24,12 @@ type ServiceAccount = {
   token_uri?: string;
 };
 
+const isCalendarNotificationRecord = (value: unknown): value is CalendarNotificationRecord => {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.id === "string" && typeof v.user_id === "string";
+};
+
 let cachedAccessToken: { token: string; expiresAt: number } | null = null;
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -234,10 +240,13 @@ Deno.serve(async (req) => {
       });
       return null;
     })();
-    const record =
-      ((payload as WebhookPayload | null)?.record ?? null) ??
-      ((payload as CalendarNotificationRecord | null) ?? null) ??
-      queryRecord;
+    const payloadRecord = (payload as WebhookPayload | null)?.record;
+    const directRecord = payload as CalendarNotificationRecord | null;
+    const record = isCalendarNotificationRecord(payloadRecord)
+      ? payloadRecord
+      : isCalendarNotificationRecord(directRecord)
+      ? directRecord
+      : queryRecord;
 
     if (!record?.user_id || !record?.id) {
       console.log("push-skip", { reason: "Missing record/user_id" });
