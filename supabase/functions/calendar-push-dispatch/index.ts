@@ -36,6 +36,43 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const PUSH_WEBHOOK_SECRET = Deno.env.get("PUSH_WEBHOOK_SECRET") ?? "";
 const FCM_SERVICE_ACCOUNT_JSON = Deno.env.get("FCM_SERVICE_ACCOUNT_JSON") ?? "";
+const FCM_SERVICE_ACCOUNT_JSON_BASE64 = Deno.env.get("FCM_SERVICE_ACCOUNT_JSON_BASE64") ?? "";
+
+const parseServiceAccount = (): ServiceAccount => {
+  const candidates: string[] = [];
+
+  if (FCM_SERVICE_ACCOUNT_JSON) {
+    const raw = FCM_SERVICE_ACCOUNT_JSON.trim();
+    candidates.push(raw);
+    // Some secret UIs/CLIs wrap JSON in quotes.
+    if (
+      (raw.startsWith("\"") && raw.endsWith("\"")) ||
+      (raw.startsWith("'") && raw.endsWith("'"))
+    ) {
+      candidates.push(raw.slice(1, -1));
+    }
+  }
+
+  if (FCM_SERVICE_ACCOUNT_JSON_BASE64) {
+    try {
+      candidates.push(atob(FCM_SERVICE_ACCOUNT_JSON_BASE64.trim()));
+    } catch {
+      // ignored, we'll throw a clear error below if nothing parses
+    }
+  }
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as ServiceAccount;
+    } catch {
+      // try next candidate
+    }
+  }
+
+  throw new Error(
+    "Invalid FCM service account secret. Set FCM_SERVICE_ACCOUNT_JSON to raw JSON or FCM_SERVICE_ACCOUNT_JSON_BASE64 to base64 JSON.",
+  );
+};
 
 const decodePem = (pem: string) => {
   const cleaned = pem
@@ -189,7 +226,7 @@ Deno.serve(async (req) => {
       console.log("push-skip", { reason: "Missing Supabase env" });
       return new Response("Missing Supabase env", { status: 500 });
     }
-    if (!FCM_SERVICE_ACCOUNT_JSON) {
+    if (!FCM_SERVICE_ACCOUNT_JSON && !FCM_SERVICE_ACCOUNT_JSON_BASE64) {
       console.log("push-skip", { reason: "Missing FCM_SERVICE_ACCOUNT_JSON" });
       return new Response("Missing FCM_SERVICE_ACCOUNT_JSON", { status: 500 });
     }
@@ -293,7 +330,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const account = JSON.parse(FCM_SERVICE_ACCOUNT_JSON) as ServiceAccount;
+    const account = parseServiceAccount();
     const accessToken = await getFcmAccessToken(account);
 
     let sent = 0;
