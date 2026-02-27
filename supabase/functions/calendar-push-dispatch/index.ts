@@ -174,16 +174,24 @@ const sendFcm = async (
 
 Deno.serve(async (req) => {
   try {
+    console.log("push-request", {
+      method: req.method,
+      url: req.url,
+    });
+
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      console.log("push-skip", { reason: "Missing Supabase env" });
       return new Response("Missing Supabase env", { status: 500 });
     }
     if (!FCM_SERVICE_ACCOUNT_JSON) {
+      console.log("push-skip", { reason: "Missing FCM_SERVICE_ACCOUNT_JSON" });
       return new Response("Missing FCM_SERVICE_ACCOUNT_JSON", { status: 500 });
     }
 
     if (PUSH_WEBHOOK_SECRET) {
       const incoming = req.headers.get("x-push-secret") ?? "";
       if (!incoming || incoming !== PUSH_WEBHOOK_SECRET) {
+        console.log("push-skip", { reason: "Unauthorized webhook secret" });
         return new Response("Unauthorized", { status: 401 });
       }
     }
@@ -200,7 +208,13 @@ Deno.serve(async (req) => {
       try {
         return JSON.parse(queryRecordRaw) as CalendarNotificationRecord;
       } catch {
-        return null;
+        try {
+          // pg_net-style query encoding can leave '+' as spaces between tokens.
+          const normalized = queryRecordRaw.replace(/\+/g, " ");
+          return JSON.parse(normalized) as CalendarNotificationRecord;
+        } catch {
+          return null;
+        }
       }
     })();
     const record =
@@ -209,11 +223,13 @@ Deno.serve(async (req) => {
       queryRecord;
 
     if (!record?.user_id || !record?.id) {
+      console.log("push-skip", { reason: "Missing record/user_id" });
       return new Response(JSON.stringify({ skipped: true, reason: "Missing record/user_id" }), {
         headers: { "Content-Type": "application/json" },
       });
     }
     if (record.is_read) {
+      console.log("push-skip", { reason: "Already read", notificationId: record.id });
       return new Response(JSON.stringify({ skipped: true, reason: "Already read" }), {
         headers: { "Content-Type": "application/json" },
       });
@@ -230,6 +246,7 @@ Deno.serve(async (req) => {
       .eq("enabled", true);
 
     if (tokenError) {
+      console.log("push-error", { reason: "Token query failed", error: tokenError.message });
       return new Response(JSON.stringify({ error: tokenError.message }), {
         status: 500,
         headers: { "Content-Type": "application/json" },
@@ -237,6 +254,14 @@ Deno.serve(async (req) => {
     }
 
     if (!tokens || tokens.length === 0) {
+      console.log("push-result", {
+        userId: record.user_id,
+        sent: 0,
+        disableIds: [],
+        errors: [],
+        skipped: true,
+        reason: "No tokens",
+      });
       return new Response(JSON.stringify({ sent: 0, skipped: true, reason: "No tokens" }), {
         headers: { "Content-Type": "application/json" },
       });
@@ -278,6 +303,7 @@ Deno.serve(async (req) => {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    console.log("push-error", { reason: "Unhandled exception", error: message });
     return new Response(JSON.stringify({ error: message }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
