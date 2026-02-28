@@ -458,6 +458,11 @@ export type SharedPlanPayload = {
   to_time: string;
   target_group_ids: string[];
   invited_ids: string[];
+  recurring?: boolean;
+  recurrence_type?: "weekly" | "fortnightly" | "four-weekly" | "monthly" | "yearly" | "custom";
+  recurrence_custom_days?: number;
+  recurrence_count?: number;
+  recurrence_infinite?: boolean;
 };
 
 export type SharedGroupRecord = {

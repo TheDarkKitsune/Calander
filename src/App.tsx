@@ -61,6 +61,7 @@ type Person = { id: string; name: string; groupIds: string[]; color: string };
 type CloudUser = { id: string; email: string | null; avatarUrl?: string | null };
 type Plan = {
   id: string;
+  sourcePlanId?: string;
   name: string;
   summary: string;
   location: string;
@@ -74,9 +75,15 @@ type Plan = {
   fromTime: string;
   toTime: string;
   invitedIds: string[];
+  recurring?: boolean;
+  recurrenceType?: RecurrenceType;
+  recurrenceCustomDays?: number;
+  recurrenceCount?: number;
+  recurrenceInfinite?: boolean;
 };
 type LegacyPlan = {
   id?: string;
+  sourcePlanId?: string;
   name?: string;
   summary?: string;
   location?: string;
@@ -91,6 +98,11 @@ type LegacyPlan = {
   fromTime?: string;
   toTime?: string;
   invitedIds?: string[];
+  recurring?: boolean;
+  recurrenceType?: RecurrenceType;
+  recurrenceCustomDays?: number;
+  recurrenceCount?: number;
+  recurrenceInfinite?: boolean;
 };
 type RecurrenceType = "weekly" | "fortnightly" | "four-weekly" | "monthly" | "yearly" | "custom";
 type InviteResponse = "going" | "maybe" | "cant";
@@ -533,6 +545,11 @@ const normalizePlans = (value: unknown, groups: Group[], defaultOwnerId: string)
         invitedIds: Array.isArray(plan.invitedIds)
           ? plan.invitedIds.filter((personId): personId is string => typeof personId === "string")
           : [],
+        recurring: Boolean(plan.recurring),
+        recurrenceType: normalizeRecurrenceType(plan.recurrenceType),
+        recurrenceCustomDays: Math.max(1, Number(plan.recurrenceCustomDays ?? 7)),
+        recurrenceCount: Math.max(0, Number(plan.recurrenceCount ?? 0)),
+        recurrenceInfinite: Boolean(plan.recurrenceInfinite),
       } satisfies Plan;
     })
     .filter((plan): plan is Plan => Boolean(plan));
@@ -563,6 +580,29 @@ const timeToMinutes = (value: string) => {
 };
 const rangesOverlap = (startA: string, endA: string, startB: string, endB: string) => {
   return !(endA < startB || endB < startA);
+};
+const normalizeRecurrenceType = (value: unknown): RecurrenceType => {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (
+    normalized === "weekly" ||
+    normalized === "fortnightly" ||
+    normalized === "four-weekly" ||
+    normalized === "monthly" ||
+    normalized === "yearly" ||
+    normalized === "custom"
+  ) {
+    return normalized;
+  }
+  return "weekly";
+};
+const getPlanIdentity = (plan: Pick<Plan, "id" | "sourcePlanId">) =>
+  plan.sourcePlanId && plan.sourcePlanId.trim() ? plan.sourcePlanId : plan.id;
+const isRecurringPlan = (plan: Pick<Plan, "recurring" | "recurrenceInfinite" | "recurrenceCount">) =>
+  Boolean(plan.recurring) && (Boolean(plan.recurrenceInfinite) || Number(plan.recurrenceCount ?? 0) > 0);
+const getRecurrenceMaxOccurrences = (plan: Pick<Plan, "recurring" | "recurrenceInfinite" | "recurrenceCount">) => {
+  if (!Boolean(plan.recurring)) return 1;
+  if (plan.recurrenceInfinite) return 260;
+  return Math.max(1, Math.min(260, Number(plan.recurrenceCount ?? 0) + 1));
 };
 const plansOverlap = (a: Pick<Plan, "fromDate" | "toDate" | "allDay" | "fromTime" | "toTime">, b: Pick<Plan, "fromDate" | "toDate" | "allDay" | "fromTime" | "toTime">) => {
   if (!rangesOverlap(a.fromDate, a.toDate, b.fromDate, b.toDate)) return false;
@@ -650,6 +690,80 @@ const addRecurrenceStep = (
   nextFrom.setFullYear(nextFrom.getFullYear() + 1);
   nextTo.setFullYear(nextTo.getFullYear() + 1);
   return { fromDate: fromDateObject(nextFrom), toDate: fromDateObject(nextTo) };
+};
+const getPlanOccurrenceWindowsInRange = (
+  plan: Pick<Plan, "fromDate" | "toDate" | "recurring" | "recurrenceType" | "recurrenceCustomDays" | "recurrenceInfinite" | "recurrenceCount">,
+  rangeStart: string,
+  rangeEnd: string
+) => {
+  const windows: Array<{ fromDate: string; toDate: string; occurrenceIndex: number }> = [];
+  const maxOccurrences = getRecurrenceMaxOccurrences(plan);
+  const recurrenceType = normalizeRecurrenceType(plan.recurrenceType);
+  const recurrenceCustomDays = Math.max(1, Number(plan.recurrenceCustomDays ?? 7));
+  let fromDateCursor = plan.fromDate;
+  let toDateCursor = plan.toDate;
+
+  for (let occurrenceIndex = 0; occurrenceIndex < maxOccurrences; occurrenceIndex += 1) {
+    if (rangesOverlap(fromDateCursor, toDateCursor, rangeStart, rangeEnd)) {
+      windows.push({ fromDate: fromDateCursor, toDate: toDateCursor, occurrenceIndex });
+    }
+    if (!isRecurringPlan(plan)) break;
+    if (fromDateCursor > rangeEnd && toDateCursor > rangeEnd) break;
+    const shifted = addRecurrenceStep(fromDateCursor, toDateCursor, recurrenceType, recurrenceCustomDays);
+    if (shifted.fromDate === fromDateCursor && shifted.toDate === toDateCursor) break;
+    fromDateCursor = shifted.fromDate;
+    toDateCursor = shifted.toDate;
+  }
+
+  return windows;
+};
+const buildDisplayPlanOccurrence = (
+  plan: Plan,
+  window: { fromDate: string; toDate: string; occurrenceIndex: number }
+): Plan => ({
+  ...plan,
+  id: `${getPlanIdentity(plan)}::occ-${window.occurrenceIndex}-${window.fromDate}`,
+  sourcePlanId: getPlanIdentity(plan),
+  fromDate: window.fromDate,
+  toDate: window.toDate,
+});
+const expandPlanOccurrencesInRange = (plan: Plan, rangeStart: string, rangeEnd: string) =>
+  getPlanOccurrenceWindowsInRange(plan, rangeStart, rangeEnd).map((window) => buildDisplayPlanOccurrence(plan, window));
+const plansOverlapWithRecurrence = (a: Plan, b: Plan) => {
+  const maxOccurrencesA = getRecurrenceMaxOccurrences(a);
+  const maxOccurrencesB = getRecurrenceMaxOccurrences(b);
+  const recurrenceTypeA = normalizeRecurrenceType(a.recurrenceType);
+  const recurrenceTypeB = normalizeRecurrenceType(b.recurrenceType);
+  const customDaysA = Math.max(1, Number(a.recurrenceCustomDays ?? 7));
+  const customDaysB = Math.max(1, Number(b.recurrenceCustomDays ?? 7));
+  let aFromCursor = a.fromDate;
+  let aToCursor = a.toDate;
+
+  for (let aIndex = 0; aIndex < maxOccurrencesA; aIndex += 1) {
+    let bFromCursor = b.fromDate;
+    let bToCursor = b.toDate;
+    for (let bIndex = 0; bIndex < maxOccurrencesB; bIndex += 1) {
+      if (
+        plansOverlap(
+          { ...a, fromDate: aFromCursor, toDate: aToCursor },
+          { ...b, fromDate: bFromCursor, toDate: bToCursor }
+        )
+      ) {
+        return true;
+      }
+      if (!isRecurringPlan(b)) break;
+      const shiftedB = addRecurrenceStep(bFromCursor, bToCursor, recurrenceTypeB, customDaysB);
+      if (shiftedB.fromDate === bFromCursor && shiftedB.toDate === bToCursor) break;
+      bFromCursor = shiftedB.fromDate;
+      bToCursor = shiftedB.toDate;
+    }
+    if (!isRecurringPlan(a)) break;
+    const shiftedA = addRecurrenceStep(aFromCursor, aToCursor, recurrenceTypeA, customDaysA);
+    if (shiftedA.fromDate === aFromCursor && shiftedA.toDate === aToCursor) break;
+    aFromCursor = shiftedA.fromDate;
+    aToCursor = shiftedA.toDate;
+  }
+  return false;
 };
 
 const IconChevronDown = () => (
@@ -1759,7 +1873,7 @@ export default function App() {
       if (plan.ownerId === personId) return true;
       if (plan.invitedIds.includes(personId)) return true;
       if (personId === selfPersonId) {
-        const incomingStatus = incomingInviteStatusByPlan.get(plan.id);
+        const incomingStatus = incomingInviteStatusByPlan.get(getPlanIdentity(plan));
         return incomingStatus === "pending" || incomingStatus === "going" || incomingStatus === "maybe";
       }
       return false;
@@ -1768,24 +1882,21 @@ export default function App() {
   );
   const getPlansForDay = useCallback(
     (dateKey: string, personId: string) =>
-      allPlans.filter(
-        (plan) =>
-          isDateInRange(dateKey, plan.fromDate, plan.toDate) &&
-          isPlanVisibleByGroups(plan) &&
-          isPlanVisibleByFriendToggle(plan) &&
-          planAppliesToPerson(plan, personId)
-      ),
+      allPlans.flatMap((plan) => {
+        if (!isPlanVisibleByGroups(plan) || !isPlanVisibleByFriendToggle(plan) || !planAppliesToPerson(plan, personId)) {
+          return [];
+        }
+        return expandPlanOccurrencesInRange(plan, dateKey, dateKey);
+      }),
     [allPlans, isPlanVisibleByFriendToggle, isPlanVisibleByGroups, planAppliesToPerson]
   );
   const getCalendarCellPlansForDay = useCallback(
     (dateKey: string, personId: string) =>
-      allPlans.filter(
-        (plan) =>
-          isDateInRange(dateKey, plan.fromDate, plan.toDate) &&
-          isPlanVisibleByGroups(plan) &&
-          isPlanVisibleByFriendToggle(plan) &&
-          (personId === selfPersonId || planAppliesToPerson(plan, personId))
-      ),
+      allPlans.flatMap((plan) => {
+        if (!isPlanVisibleByGroups(plan) || !isPlanVisibleByFriendToggle(plan)) return [];
+        if (personId !== selfPersonId && !planAppliesToPerson(plan, personId)) return [];
+        return expandPlanOccurrencesInRange(plan, dateKey, dateKey);
+      }),
     [allPlans, isPlanVisibleByFriendToggle, isPlanVisibleByGroups, planAppliesToPerson, selfPersonId]
   );
   const getPlanPillStyle = useCallback(
@@ -1793,7 +1904,7 @@ export default function App() {
       const firstGroupColor = plan.targetGroupIds
         .map((groupId) => store.groups.find((group) => group.id === groupId)?.color ?? null)
         .find((color): color is string => Boolean(color));
-      const inviteStripeColors = (participantStripeColors ?? acceptedInviteeColorByPlan.get(plan.id) ?? [])
+      const inviteStripeColors = (participantStripeColors ?? acceptedInviteeColorByPlan.get(getPlanIdentity(plan)) ?? [])
         .filter((color, index, source) => Boolean(color) && source.indexOf(color) === index);
       const firstInviteStripeColor = inviteStripeColors[0] ?? null;
       const style: CSSProperties = {
@@ -1946,9 +2057,9 @@ export default function App() {
         (plan) =>
           isPlanVisibleByGroups(plan) &&
           isPlanVisibleByFriendToggle(plan) &&
-          (selectedPerson.id === selfPersonId || planAppliesToPerson(plan, selectedPerson.id)) &&
-          !(plan.toDate < visibleStart || plan.fromDate > visibleEnd)
+          (selectedPerson.id === selfPersonId || planAppliesToPerson(plan, selectedPerson.id))
       )
+      .flatMap((plan) => expandPlanOccurrencesInRange(plan, visibleStart, visibleEnd))
       .slice()
       .sort((left, right) => {
         if (left.fromDate !== right.fromDate) return left.fromDate.localeCompare(right.fromDate);
@@ -2083,11 +2194,12 @@ export default function App() {
     setPlanFromTime(plan.fromTime);
     setPlanToTime(plan.toTime);
     setPlanInvitedIds([...plan.invitedIds]);
-    setPlanRecurring(false);
-    setPlanRecurrenceType("weekly");
-    setPlanCustomRecurrenceDays(7);
-    setPlanRecurrenceCount(1);
-    setPlanRecurrenceInfinite(false);
+    const recurring = Boolean(plan.recurring) && (Boolean(plan.recurrenceInfinite) || Number(plan.recurrenceCount ?? 0) > 0);
+    setPlanRecurring(recurring);
+    setPlanRecurrenceType(normalizeRecurrenceType(plan.recurrenceType));
+    setPlanCustomRecurrenceDays(Math.max(1, Number(plan.recurrenceCustomDays ?? 7)));
+    setPlanRecurrenceCount(Math.max(1, Number(plan.recurrenceCount ?? 1)));
+    setPlanRecurrenceInfinite(Boolean(plan.recurrenceInfinite));
     setPlanModalMessage("");
     setCreatePlanOpen(true);
   };
@@ -2154,36 +2266,16 @@ export default function App() {
       fromTime: planFromTime,
       toTime: planToTime,
       invitedIds: [],
+      recurring: planRecurring,
+      recurrenceType: planRecurrenceType,
+      recurrenceCustomDays: Math.max(1, planCustomRecurrenceDays),
+      recurrenceCount: Math.max(0, planRecurrenceCount),
+      recurrenceInfinite: planRecurrenceInfinite,
     };
-    const candidateInstances: Plan[] = [baseCandidate];
-    if (!editingPlanId && planRecurring) {
-      const repeatCount = planRecurrenceInfinite ? 260 : planRecurrenceCount;
-      let fromDateCursor = planFromDate;
-      let toDateCursor = planToDate;
-      for (let index = 0; index < repeatCount; index += 1) {
-        const shifted = addRecurrenceStep(
-          fromDateCursor,
-          toDateCursor,
-          planRecurrenceType,
-          Math.max(1, planCustomRecurrenceDays)
-        );
-        fromDateCursor = shifted.fromDate;
-        toDateCursor = shifted.toDate;
-        candidateInstances.push({
-          ...baseCandidate,
-          id: createId(`${planName}-${index + 1}`),
-          fromDate: shifted.fromDate,
-          toDate: shifted.toDate,
-        });
-      }
-    }
-    const conflicts = candidateInstances
-      .flatMap((candidate) =>
-        allPlans
-          .filter((plan) => plan.id !== editingPlanId)
-          .filter((plan) => (normalizeIdentity(plan.ownerId) === viewerOwnerId || plan.invitedIds.includes(selfPersonId)))
-          .filter((plan) => plansOverlap(plan, candidate))
-      );
+    const conflicts = allPlans
+      .filter((plan) => getPlanIdentity(plan) !== (editingPlanId ?? ""))
+      .filter((plan) => (normalizeIdentity(plan.ownerId) === viewerOwnerId || plan.invitedIds.includes(selfPersonId)))
+      .filter((plan) => plansOverlapWithRecurrence(plan, baseCandidate));
     if (conflicts.length > 0) {
       setPlanModalMessage(`You're busy at that time. Conflicts with: ${conflicts.slice(0, 2).map((plan) => formatConflictSummary(plan)).join(" | ")}`);
       return;
@@ -2209,6 +2301,11 @@ export default function App() {
       fromTime: planFromTime,
       toTime: planToTime,
       invitedIds: normalizedInvitedIds,
+      recurring: planRecurring,
+      recurrenceType: planRecurrenceType,
+      recurrenceCustomDays: Math.max(1, planCustomRecurrenceDays),
+      recurrenceCount: Math.max(0, planRecurrenceCount),
+      recurrenceInfinite: planRecurrenceInfinite,
     };
     if (editingPlanId) {
       const existingInLocal = plans.some((plan) => plan.id === editingPlanId);
@@ -2219,37 +2316,8 @@ export default function App() {
       setSharedPlans((current) => current.filter((plan) => plan.id !== editingPlanId));
       setPlanModalMessage("Plan updated.");
     } else {
-      if (!planRecurring) {
-        setPlans((current) => [nextPlan, ...current]);
-        setPlanModalMessage("Plan created.");
-      } else {
-        const repeatCount = planRecurrenceInfinite ? 260 : planRecurrenceCount;
-        let fromDateCursor = planFromDate;
-        let toDateCursor = planToDate;
-        const generatedPlans: Plan[] = [nextPlan];
-        for (let index = 0; index < repeatCount; index += 1) {
-          const shifted = addRecurrenceStep(
-            fromDateCursor,
-            toDateCursor,
-            planRecurrenceType,
-            Math.max(1, planCustomRecurrenceDays)
-          );
-          fromDateCursor = shifted.fromDate;
-          toDateCursor = shifted.toDate;
-          generatedPlans.push({
-            ...nextPlan,
-            id: createId(`${planName}-${index + 1}`),
-            fromDate: shifted.fromDate,
-            toDate: shifted.toDate,
-          });
-        }
-        setPlans((current) => [...generatedPlans, ...current]);
-        setPlanModalMessage(
-          planRecurrenceInfinite
-            ? `Recurring plan created (${generatedPlans.length} future instances generated).`
-            : `Recurring plan created (${generatedPlans.length} instances).`
-        );
-      }
+      setPlans((current) => [nextPlan, ...current]);
+      setPlanModalMessage(planRecurring ? "Recurring plan created." : "Plan created.");
     }
   };
 
@@ -2263,12 +2331,13 @@ export default function App() {
 
   const getInviteStatusForPerson = useCallback(
     (plan: Plan, personId: string): "pending" | InviteResponse | null => {
+      const planId = getPlanIdentity(plan);
       if (plan.ownerId === personId) return "going";
       if (!plan.invitedIds.includes(personId)) return null;
-      const ownerTracked = inviteResponseByPlanAndPerson.get(`${plan.id}:${personId}`);
+      const ownerTracked = inviteResponseByPlanAndPerson.get(`${planId}:${personId}`);
       if (ownerTracked) return ownerTracked;
       if (personId === selfPersonId) {
-        return incomingInviteStatusByPlan.get(plan.id) ?? "pending";
+        return incomingInviteStatusByPlan.get(planId) ?? "pending";
       }
       return "pending";
     },
@@ -2305,8 +2374,9 @@ export default function App() {
   }, [cloudFriendPeople, getInviteStatusForPerson, planDetailsPlan, selfPersonId, store.people, viewerOwnerId]);
   const getGoingStripeColorsForPlan = useCallback(
     (plan: Plan) => {
-      const colors = [...(acceptedInviteeColorByPlan.get(plan.id) ?? [])];
-      const selfIncomingStatus = incomingInviteStatusByPlan.get(plan.id);
+      const planId = getPlanIdentity(plan);
+      const colors = [...(acceptedInviteeColorByPlan.get(planId) ?? [])];
+      const selfIncomingStatus = incomingInviteStatusByPlan.get(planId);
       if (selfIncomingStatus === "going" && normalizeIdentity(plan.ownerId) !== viewerOwnerId) {
         const selfColor = personColorById.get(selfPersonId);
         if (selfColor && !colors.includes(selfColor)) colors.push(selfColor);
@@ -2324,7 +2394,7 @@ export default function App() {
   }, [incomingPlanInvites]);
   const getViewerInviteStatusForPlan = useCallback(
     (plan: Plan) => {
-      const invite = incomingInviteByPlanId.get(plan.id);
+      const invite = incomingInviteByPlanId.get(getPlanIdentity(plan));
       return invite ? normalizeInviteStatus(invite.status) : null;
     },
     [incomingInviteByPlanId]
@@ -2563,6 +2633,11 @@ export default function App() {
         fromTime: plan.from_time || "09:00",
         toTime: plan.to_time || "17:00",
         invitedIds: isOwnedByViewer && Array.isArray(plan.invited_ids) ? plan.invited_ids : [],
+        recurring: Boolean(plan.recurring),
+        recurrenceType: normalizeRecurrenceType(plan.recurrence_type),
+        recurrenceCustomDays: Math.max(1, Number(plan.recurrence_custom_days ?? 7)),
+        recurrenceCount: Math.max(0, Number(plan.recurrence_count ?? 0)),
+        recurrenceInfinite: Boolean(plan.recurrence_infinite),
       };
     });
     const ownedByViewer = normalized.filter((plan) => normalizeIdentity(plan.ownerId) === viewerOwnerId);
@@ -2890,6 +2965,11 @@ export default function App() {
       invited_ids: (shareRecipientIdsByPlan.get(plan.id) ?? [])
         .filter((id) => id && id !== socialUserId && isUuid(id))
         .sort(),
+      recurring: Boolean(plan.recurring),
+      recurrence_type: normalizeRecurrenceType(plan.recurrenceType),
+      recurrence_custom_days: Math.max(1, Number(plan.recurrenceCustomDays ?? 7)),
+      recurrence_count: Math.max(0, Number(plan.recurrenceCount ?? 0)),
+      recurrence_infinite: Boolean(plan.recurrenceInfinite),
     }));
     const sortedPayload = [...planPayload].sort((a, b) => a.id.localeCompare(b.id));
     const inviteSyncPayload = ownedSharedPlans
@@ -3629,7 +3709,7 @@ export default function App() {
                         className={`day-plan-bar ${hasPrev ? "is-continued-prev" : ""} ${hasNext ? "is-continued-next" : ""} ${bridgesIntoCurrentMonth ? "bridges-current-month" : ""}`}
                         style={segmentStyle}
                         title={plan.name}
-                        onClick={(event) => openPlanDetailsFromPill(event, plan.id)}
+                        onClick={(event) => openPlanDetailsFromPill(event, getPlanIdentity(plan))}
                       >
                         <span className="day-plan-content">
                           <span className="day-plan-name">{plan.name}</span>
@@ -3719,7 +3799,7 @@ export default function App() {
                                     <div
                                       key={`${person.id}-${plan.id}-${start}-${lane}`}
                                       className="day-time-plan"
-                                      onClick={(event) => openPlanDetailsFromPill(event, plan.id)}
+                                      onClick={(event) => openPlanDetailsFromPill(event, getPlanIdentity(plan))}
                                       style={{
                                         top: `${(start / (24 * 60)) * 100}%`,
                                         height: `${Math.max(2, ((end - start) / (24 * 60)) * 100)}%`,
