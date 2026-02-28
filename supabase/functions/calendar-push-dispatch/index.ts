@@ -177,6 +177,7 @@ const sendFcm = async (
         type: String(notification.type ?? ""),
         user_id: String(notification.user_id ?? ""),
         plan_id: String(notification.payload?.plan_id ?? ""),
+        invite_id: String(notification.payload?.invite_id ?? ""),
       },
       android: {
         priority: "high",

@@ -53,9 +53,6 @@ const createSupabaseClient = () =>
 const supabase: SupabaseClient | null = isCloudConfigured
   ? (globalThis.__calanderSupabase ?? (globalThis.__calanderSupabase = createSupabaseClient()))
   : null;
-// Notification inserts are frequently blocked by RLS for cross-user writes.
-// Keep invite sync independent from notification writes.
-let canWriteCalendarNotifications = false;
 
 const readOverrideTokens = async () => {
   const local = readAuthOverrideTokens();
@@ -592,24 +589,6 @@ export const syncSharedPlanInvites = async (ownerId: string, planId: string, inv
       const message = (error.message ?? "").toLowerCase();
       const isDuplicateConflict = code === "23505" || message.includes("duplicate key") || message.includes("conflict");
       if (!isDuplicateConflict) return { error: error.message };
-    }
-
-    const notifications = toInsert.map((inviteeId) => ({
-      user_id: inviteeId,
-      type: "plan_invite",
-      title: "New plan invite",
-      body: "You have been invited to a plan.",
-      payload: { plan_id: planId, inviter_id: ownerId },
-    }));
-    if (canWriteCalendarNotifications) {
-      const { error: notificationError } = await supabase.from("calendar_notifications").insert(notifications);
-      if (notificationError) {
-        const message = (notificationError.message ?? "").toLowerCase();
-        if (message.includes("forbidden") || message.includes("permission") || message.includes("row-level security")) {
-          canWriteCalendarNotifications = false;
-        }
-        // Notification policies can block cross-user inserts; invites should still succeed.
-      }
     }
   }
 

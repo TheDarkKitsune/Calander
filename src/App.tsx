@@ -1091,12 +1091,52 @@ export default function App() {
           requestPermissions?: () => Promise<{ receive?: string }>;
           register?: () => Promise<void>;
           addListener?: (
-            eventName: "registration" | "registrationError",
-            listener: (value: { value?: string; error?: unknown }) => void
+            eventName:
+              | "registration"
+              | "registrationError"
+              | "pushNotificationReceived"
+              | "pushNotificationActionPerformed",
+            listener: (value: {
+              value?: string;
+              error?: unknown;
+              actionId?: string;
+              inputValue?: string;
+              notification?: {
+                title?: string;
+                body?: string;
+                data?: Record<string, unknown>;
+              };
+              title?: string;
+              body?: string;
+              data?: Record<string, unknown>;
+            }) => void
           ) => Promise<{ remove: () => Promise<void> }>;
         }
       | undefined;
     if (!pushPlugin?.checkPermissions || !pushPlugin?.requestPermissions || !pushPlugin?.register || !pushPlugin?.addListener) return;
+    const localNotificationsPlugin = capacitor.Plugins?.LocalNotifications as
+      | {
+          registerActionTypes?: (options: {
+            types: Array<{ id: string; actions: Array<{ id: string; title: string }> }>;
+          }) => Promise<void>;
+          schedule?: (options: {
+            notifications: Array<{
+              id: number;
+              title?: string;
+              body?: string;
+              actionTypeId?: string;
+              extra?: Record<string, unknown>;
+            }>;
+          }) => Promise<void>;
+          addListener?: (
+            eventName: "localNotificationActionPerformed",
+            listener: (value: {
+              actionId?: string;
+              notification?: { extra?: Record<string, unknown> };
+            }) => void
+          ) => Promise<{ remove: () => Promise<void> }>;
+        }
+      | undefined;
     const checkPermissions = pushPlugin.checkPermissions;
     const requestPermissions = pushPlugin.requestPermissions;
     const register = pushPlugin.register;
@@ -1105,8 +1145,39 @@ export default function App() {
     let disposed = false;
     let registrationHandle: { remove: () => Promise<void> } | null = null;
     let registrationErrorHandle: { remove: () => Promise<void> } | null = null;
+    let pushReceivedHandle: { remove: () => Promise<void> } | null = null;
+    let pushActionHandle: { remove: () => Promise<void> } | null = null;
+    let localActionHandle: { remove: () => Promise<void> } | null = null;
+
+    const parseInviteResponseAction = (actionId: string | undefined): InviteResponse | null => {
+      const normalized = String(actionId ?? "").trim().toLowerCase();
+      if (normalized === "invite-going") return "going";
+      if (normalized === "invite-maybe") return "maybe";
+      if (normalized === "invite-cant") return "cant";
+      return null;
+    };
+
+    const applyInviteQuickResponse = async (inviteId: string | null, response: InviteResponse | null) => {
+      if (!inviteId || !response) return;
+      await respondToPlanInvite(inviteId, response);
+    };
 
     const registerForPush = async () => {
+      if (localNotificationsPlugin?.registerActionTypes) {
+        await localNotificationsPlugin.registerActionTypes({
+          types: [
+            {
+              id: "plan-invite-actions",
+              actions: [
+                { id: "invite-going", title: "Going" },
+                { id: "invite-maybe", title: "Maybe" },
+                { id: "invite-cant", title: "Can't" },
+              ],
+            },
+          ],
+        });
+      }
+
       const registrationListener = await addListener("registration", ({ value }) => {
         if (disposed) return;
         const token = String(value ?? "").trim();
@@ -1127,6 +1198,54 @@ export default function App() {
       });
       registrationErrorHandle = errorListener;
 
+      const receivedListener = await addListener("pushNotificationReceived", ({ title, body, data }) => {
+        if (!localNotificationsPlugin?.schedule) return;
+        const type = String(data?.type ?? "").toLowerCase();
+        const inviteId = String(data?.invite_id ?? "").trim();
+        if (type !== "plan_invite" || !inviteId) return;
+        const notificationId = Number.parseInt(String(data?.notification_id ?? Date.now()), 10);
+        const safeId = Number.isFinite(notificationId) ? Math.abs(notificationId % 2147483000) : Date.now() % 2147483000;
+        void localNotificationsPlugin.schedule({
+          notifications: [
+            {
+              id: safeId,
+              title: title ?? "New plan invite",
+              body: body ?? "Respond to this invite.",
+              actionTypeId: "plan-invite-actions",
+              extra: {
+                invite_id: inviteId,
+                plan_id: String(data?.plan_id ?? ""),
+              },
+            },
+          ],
+        });
+      });
+      pushReceivedHandle = receivedListener;
+
+      const pushActionListener = await addListener("pushNotificationActionPerformed", ({ actionId, notification, data }) => {
+        const response = parseInviteResponseAction(actionId);
+        const payload = (notification?.data ?? data ?? {}) as Record<string, unknown>;
+        const inviteId = String(payload.invite_id ?? "").trim() || null;
+        if (response) {
+          void applyInviteQuickResponse(inviteId, response);
+        }
+      });
+      pushActionHandle = pushActionListener;
+
+      if (localNotificationsPlugin?.addListener) {
+        const localActionListener = await localNotificationsPlugin.addListener(
+          "localNotificationActionPerformed",
+          ({ actionId, notification }) => {
+            const response = parseInviteResponseAction(actionId);
+            const inviteId = String(notification?.extra?.invite_id ?? "").trim() || null;
+            if (response) {
+              void applyInviteQuickResponse(inviteId, response);
+            }
+          }
+        );
+        localActionHandle = localActionListener;
+      }
+
       const permission = await checkPermissions();
       if (permission.receive === "prompt") {
         const requested = await requestPermissions();
@@ -1143,6 +1262,9 @@ export default function App() {
       disposed = true;
       if (registrationHandle) void registrationHandle.remove();
       if (registrationErrorHandle) void registrationErrorHandle.remove();
+      if (pushReceivedHandle) void pushReceivedHandle.remove();
+      if (pushActionHandle) void pushActionHandle.remove();
+      if (localActionHandle) void localActionHandle.remove();
     };
   }, [notificationsEnabled, socialUserId]);
   useEffect(() => {
