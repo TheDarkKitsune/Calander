@@ -36,13 +36,14 @@ begin
   from public.calendar_shared_plans s
   where s.id = new.plan_id;
 
+  -- Dedupe by invite row id so an old unread invite on the same plan
+  -- does not block new/re-issued invites from notifying.
   if exists (
     select 1
     from public.calendar_notifications n
     where n.user_id = new.invitee_id
       and n.type = 'plan_invite'
-      and coalesce(n.payload->>'plan_id', '') = new.plan_id
-      and n.is_read = false
+      and coalesce(n.payload->>'invite_id', '') = new.id::text
   ) then
     return new;
   end if;

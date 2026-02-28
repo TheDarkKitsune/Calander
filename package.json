@@ -20,6 +20,7 @@
     "cap:run:android": "pnpm run build:web && cap run android"
   },
   "dependencies": {
+    "@capacitor/app": "^8.0.1",
     "@capacitor/android": "^8.1.0",
     "@capacitor/core": "^8.1.0",
     "@capacitor/ios": "^8.1.0",

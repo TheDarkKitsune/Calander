@@ -165,20 +165,28 @@ const sendFcm = async (
   notification: CalendarNotificationRecord,
 ) => {
   const endpoint = `https://fcm.googleapis.com/v1/projects/${account.project_id}/messages:send`;
+  const isPlanInvite = String(notification.type ?? "").toLowerCase() === "plan_invite";
+  const sharedData = {
+    notification_id: String(notification.id ?? ""),
+    type: String(notification.type ?? ""),
+    user_id: String(notification.user_id ?? ""),
+    plan_id: String(notification.payload?.plan_id ?? ""),
+    invite_id: String(notification.payload?.invite_id ?? ""),
+    title: notification.title || "Calendar",
+    body: notification.body || "You have a new update.",
+  };
   const body = {
     message: {
       token: targetToken,
-      notification: {
-        title: notification.title || "Calendar",
-        body: notification.body || "You have a new update.",
-      },
-      data: {
-        notification_id: String(notification.id ?? ""),
-        type: String(notification.type ?? ""),
-        user_id: String(notification.user_id ?? ""),
-        plan_id: String(notification.payload?.plan_id ?? ""),
-        invite_id: String(notification.payload?.invite_id ?? ""),
-      },
+      ...(isPlanInvite
+        ? {}
+        : {
+            notification: {
+              title: notification.title || "Calendar",
+              body: notification.body || "You have a new update.",
+            },
+          }),
+      data: sharedData,
       android: {
         priority: "high",
       },

@@ -2657,6 +2657,74 @@ export default function App() {
     await refreshSharedPlans();
   };
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const capacitor = (window as typeof window & {
+      Capacitor?: {
+        Plugins?: Record<string, unknown>;
+      };
+    }).Capacitor;
+    const appPlugin = capacitor?.Plugins?.App as
+      | {
+          addListener?: (
+            eventName: "appUrlOpen",
+            listener: (event: { url?: string }) => void
+          ) => Promise<{ remove: () => Promise<void> }>;
+          getLaunchUrl?: () => Promise<{ url?: string | null }>;
+        }
+      | undefined;
+    if (!appPlugin?.addListener) return;
+
+    const parseInviteActionUrl = (rawUrl: string | null | undefined) => {
+      if (!rawUrl) return null;
+      try {
+        const parsed = new URL(rawUrl);
+        if (parsed.protocol !== "enderfallcalendar:" || parsed.hostname !== "invite-action") return null;
+        const inviteId = parsed.searchParams.get("invite_id");
+        const responseRaw = (parsed.searchParams.get("response") ?? "").toLowerCase();
+        const response = responseRaw === "going" || responseRaw === "maybe" || responseRaw === "cant"
+          ? (responseRaw as InviteResponse)
+          : null;
+        return { inviteId, response };
+      } catch {
+        return null;
+      }
+    };
+
+    let disposed = false;
+    let handle: { remove: () => Promise<void> } | null = null;
+
+    const processActionUrl = (url: string | null | undefined) => {
+      const parsed = parseInviteActionUrl(url);
+      if (!parsed?.inviteId || !parsed.response) return;
+      void (async () => {
+        const result = await respondToPlanInvite(parsed.inviteId, parsed.response);
+        if (result.error) return;
+        await refreshNotifications();
+        await refreshSharedPlans();
+      })();
+    };
+
+    const init = async () => {
+      handle = await appPlugin.addListener?.("appUrlOpen", ({ url }) => {
+        if (disposed) return;
+        processActionUrl(url);
+      }) ?? null;
+
+      if (appPlugin.getLaunchUrl) {
+        const launch = await appPlugin.getLaunchUrl().catch(() => null);
+        processActionUrl(launch?.url ?? null);
+      }
+    };
+
+    void init();
+
+    return () => {
+      disposed = true;
+      if (handle) void handle.remove();
+    };
+  }, [refreshNotifications, refreshSharedPlans]);
+
   const markAsRead = async (notificationId: string) => {
     const { error } = await markNotificationRead(notificationId);
     if (error) return;
