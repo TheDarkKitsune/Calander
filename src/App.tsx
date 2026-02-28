@@ -273,6 +273,7 @@ const createUuid = () =>
   typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
     : stableUuidFromText(`${Date.now()}-${Math.random()}`);
+const normalizeIdentity = (value: string | null | undefined) => String(value ?? "").trim().toLowerCase();
 const parseSharedGroupRef = (value: string) => {
   const divider = value.indexOf(":");
   if (divider <= 0) return null;
@@ -792,14 +793,21 @@ export default function App() {
   const [hiddenGroupIds, setHiddenGroupIds] = useState<string[]>([]);
   const [collapsedPersonIds, setCollapsedPersonIds] = useState<string[]>([]);
   const [dayTimelineRowSize, setDayTimelineRowSize] = useState(22);
+  const [isMonthTransitioning, setIsMonthTransitioning] = useState(false);
+  const [monthTransitionDirection, setMonthTransitionDirection] = useState<-1 | 0 | 1>(0);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const dayTimelineRef = useRef<HTMLDivElement | null>(null);
+  const monthTransitionTimerRef = useRef<number | null>(null);
   const activityListRef = useRef<HTMLDivElement | null>(null);
   const activityAutoReadPendingRef = useRef<Set<string>>(new Set());
   const seenActivityNotificationIdsRef = useRef<Set<string>>(new Set());
   const seenPendingInviteIdsRef = useRef<Set<string>>(new Set());
   const systemNotificationHydratedRef = useRef(false);
   const socialUserId = isUuid(cloudUser?.id) ? (cloudUser?.id ?? null) : null;
+  const viewerOwnerId = useMemo(
+    () => normalizeIdentity(socialUserId ?? selfPersonId),
+    [selfPersonId, socialUserId]
+  );
 
   const storeRef = useRef(store);
   const remoteApplyRef = useRef(false);
@@ -2085,10 +2093,12 @@ export default function App() {
   };
 
   const deletePlan = (planId: string) => {
-    const removed = plans.find((plan) => plan.id === planId);
-    if (removed && removed.ownerId !== selfPersonId) return;
+    const removed = allPlans.find((plan) => plan.id === planId);
+    if (!removed) return;
+    if (normalizeIdentity(removed.ownerId) !== viewerOwnerId) return;
     setPlans((current) => current.filter((plan) => plan.id !== planId));
-    if (removed && cloudUser?.id && removed.invitedIds.length > 0) {
+    setSharedPlans((current) => current.filter((plan) => plan.id !== planId));
+    if (cloudUser?.id && isUuid(cloudUser.id)) {
       void deleteSharedPlan(cloudUser.id, planId);
     }
     if (editingPlanId === planId) {
@@ -2119,9 +2129,11 @@ export default function App() {
       setPlanModalMessage("Set recurrence count to at least 1.");
       return;
     }
+    const existingPlanForEdit = editingPlanId
+      ? allPlans.find((plan) => plan.id === editingPlanId) ?? null
+      : null;
     if (editingPlanId) {
-      const existingPlan = allPlans.find((plan) => plan.id === editingPlanId);
-      if (existingPlan && !canEditPlan(existingPlan)) {
+      if (existingPlanForEdit && !canEditPlan(existingPlanForEdit)) {
         setPlanModalMessage("Only the host or invited users marked Going can edit this plan.");
         return;
       }
@@ -2132,7 +2144,7 @@ export default function App() {
       name: planName.trim(),
       summary: planSummary.trim(),
       location: planLocation.trim(),
-      ownerId: editingPlanId ? plans.find((plan) => plan.id === editingPlanId)?.ownerId ?? selfPersonId : selfPersonId,
+      ownerId: existingPlanForEdit?.ownerId ?? viewerOwnerId,
       targetGroupIds: planTargetGroupIds,
       excludedPersonIds: [],
       isPrivate: planIsPrivate,
@@ -2169,7 +2181,7 @@ export default function App() {
       .flatMap((candidate) =>
         allPlans
           .filter((plan) => plan.id !== editingPlanId)
-          .filter((plan) => (plan.ownerId === selfPersonId || plan.invitedIds.includes(selfPersonId)))
+          .filter((plan) => (normalizeIdentity(plan.ownerId) === viewerOwnerId || plan.invitedIds.includes(selfPersonId)))
           .filter((plan) => plansOverlap(plan, candidate))
       );
     if (conflicts.length > 0) {
@@ -2187,7 +2199,7 @@ export default function App() {
       name: planName.trim(),
       summary: planSummary.trim(),
       location: planLocation.trim(),
-      ownerId: editingPlanId ? plans.find((plan) => plan.id === editingPlanId)?.ownerId ?? selfPersonId : selfPersonId,
+      ownerId: existingPlanForEdit?.ownerId ?? viewerOwnerId,
       targetGroupIds: planTargetGroupIds,
       excludedPersonIds: normalizedExcludedIds,
       isPrivate: planIsPrivate,
@@ -2199,7 +2211,12 @@ export default function App() {
       invitedIds: normalizedInvitedIds,
     };
     if (editingPlanId) {
-      setPlans((current) => current.map((plan) => (plan.id === editingPlanId ? nextPlan : plan)));
+      const existingInLocal = plans.some((plan) => plan.id === editingPlanId);
+      setPlans((current) => {
+        if (existingInLocal) return current.map((plan) => (plan.id === editingPlanId ? nextPlan : plan));
+        return [nextPlan, ...current];
+      });
+      setSharedPlans((current) => current.filter((plan) => plan.id !== editingPlanId));
       setPlanModalMessage("Plan updated.");
     } else {
       if (!planRecurring) {
@@ -2271,7 +2288,7 @@ export default function App() {
     const ownerName =
       store.people.find((person) => person.id === planDetailsPlan.ownerId)?.name ??
       cloudFriendPeople.find((person) => person.id === planDetailsPlan.ownerId)?.name ??
-      (planDetailsPlan.ownerId === selfPersonId ? "You" : "Friend");
+      (normalizeIdentity(planDetailsPlan.ownerId) === viewerOwnerId ? "You" : "Friend");
     const inviteeRows = planDetailsPlan.invitedIds.map((inviteeId) => {
       const name =
         store.people.find((person) => person.id === inviteeId)?.name ??
@@ -2285,18 +2302,18 @@ export default function App() {
       };
     });
     return [{ id: planDetailsPlan.ownerId, name: ownerName, response: "going" as const }, ...inviteeRows];
-  }, [cloudFriendPeople, getInviteStatusForPerson, planDetailsPlan, selfPersonId, store.people]);
+  }, [cloudFriendPeople, getInviteStatusForPerson, planDetailsPlan, selfPersonId, store.people, viewerOwnerId]);
   const getGoingStripeColorsForPlan = useCallback(
     (plan: Plan) => {
       const colors = [...(acceptedInviteeColorByPlan.get(plan.id) ?? [])];
       const selfIncomingStatus = incomingInviteStatusByPlan.get(plan.id);
-      if (selfIncomingStatus === "going" && plan.ownerId !== selfPersonId) {
+      if (selfIncomingStatus === "going" && normalizeIdentity(plan.ownerId) !== viewerOwnerId) {
         const selfColor = personColorById.get(selfPersonId);
         if (selfColor && !colors.includes(selfColor)) colors.push(selfColor);
       }
       return colors;
     },
-    [acceptedInviteeColorByPlan, incomingInviteStatusByPlan, personColorById, selfPersonId]
+    [acceptedInviteeColorByPlan, incomingInviteStatusByPlan, personColorById, selfPersonId, viewerOwnerId]
   );
   const incomingInviteByPlanId = useMemo(() => {
     const map = new Map<string, SharedInvitePayload>();
@@ -2314,10 +2331,10 @@ export default function App() {
   );
   const canEditPlan = useCallback(
     (plan: Plan) => {
-      if (plan.ownerId === selfPersonId) return true;
+      if (normalizeIdentity(plan.ownerId) === viewerOwnerId) return true;
       return getViewerInviteStatusForPlan(plan) === "going";
     },
-    [getViewerInviteStatusForPlan, selfPersonId]
+    [getViewerInviteStatusForPlan, viewerOwnerId]
   );
 
   const resetGroupForm = () => {
@@ -2530,7 +2547,7 @@ export default function App() {
     }
     const normalized: Plan[] = remotePlans.map((plan) => {
       const decodedTargets = decodeSharedTargetGroupIds(Array.isArray(plan.target_group_ids) ? plan.target_group_ids : []);
-      const isOwnedByViewer = plan.owner_id === socialUserId;
+      const isOwnedByViewer = normalizeIdentity(plan.owner_id) === viewerOwnerId;
       return {
         id: plan.id,
         name: plan.name,
@@ -2548,8 +2565,21 @@ export default function App() {
         invitedIds: isOwnedByViewer && Array.isArray(plan.invited_ids) ? plan.invited_ids : [],
       };
     });
-    setSharedPlans(normalized);
-  }, [socialUserId]);
+    const ownedByViewer = normalized.filter((plan) => normalizeIdentity(plan.ownerId) === viewerOwnerId);
+    const sharedByOthers = normalized.filter((plan) => normalizeIdentity(plan.ownerId) !== viewerOwnerId);
+    if (ownedByViewer.length > 0) {
+      setPlans((current) => {
+        const ownedById = new Map(ownedByViewer.map((plan) => [plan.id, plan]));
+        const merged = current.map((plan) => ownedById.get(plan.id) ?? plan);
+        const existingIds = new Set(merged.map((plan) => plan.id));
+        for (const plan of ownedByViewer) {
+          if (!existingIds.has(plan.id)) merged.push(plan);
+        }
+        return merged;
+      });
+    }
+    setSharedPlans(sharedByOthers);
+  }, [socialUserId, viewerOwnerId]);
 
   const refreshNotifications = useCallback(async () => {
     if (!socialUserId) {
@@ -2631,7 +2661,7 @@ export default function App() {
     if (relatedPlan && (response === "going" || response === "maybe") && selfPersonId) {
       const conflicts = allPlans
         .filter((plan) => plan.id !== relatedPlan.id)
-        .filter((plan) => (plan.ownerId === selfPersonId || plan.invitedIds.includes(selfPersonId)))
+        .filter((plan) => (normalizeIdentity(plan.ownerId) === viewerOwnerId || plan.invitedIds.includes(selfPersonId)))
         .filter((plan) => plansOverlap(plan, relatedPlan));
       if (conflicts.length > 0) {
         overlapNotice = ` Overlap: ${conflicts.slice(0, 2).map((plan) => formatConflictSummary(plan)).join(" | ")}`;
@@ -3100,9 +3130,48 @@ export default function App() {
     setRoomMembers([]);
   };
 
-  const shiftMonth = (direction: -1 | 1) => {
-    setMonthAnchor((current) => new Date(current.getFullYear(), current.getMonth() + direction, 1));
-  };
+  const animateMonthTransition = useCallback(
+    (direction: -1 | 0 | 1) => {
+      if (!animationsEnabled) return;
+      if (monthTransitionTimerRef.current !== null) {
+        window.clearTimeout(monthTransitionTimerRef.current);
+      }
+      setMonthTransitionDirection(direction);
+      setIsMonthTransitioning(true);
+      monthTransitionTimerRef.current = window.setTimeout(() => {
+        setIsMonthTransitioning(false);
+        monthTransitionTimerRef.current = null;
+      }, 240);
+    },
+    [animationsEnabled]
+  );
+
+  const goToMonth = useCallback(
+    (nextMonth: Date, direction: -1 | 0 | 1) => {
+      setMonthAnchor(startOfMonth(nextMonth));
+      animateMonthTransition(direction);
+    },
+    [animateMonthTransition]
+  );
+
+  const shiftMonth = useCallback(
+    (direction: -1 | 1) => {
+      setMonthAnchor((current) => {
+        const next = new Date(current.getFullYear(), current.getMonth() + direction, 1);
+        return startOfMonth(next);
+      });
+      animateMonthTransition(direction);
+    },
+    [animateMonthTransition]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (monthTransitionTimerRef.current !== null) {
+        window.clearTimeout(monthTransitionTimerRef.current);
+      }
+    };
+  }, []);
   const onCalendarTouchStart = (event: TouchEvent<HTMLDivElement>) => {
     const touch = event.changedTouches[0];
     if (!touch) return;
@@ -3133,7 +3202,10 @@ export default function App() {
   );
   const unreadNotificationCount = useMemo(
     () =>
-      cloudNotifications.filter((notification) => !notification.is_read).length +
+      cloudNotifications
+        .filter((notification) => !notification.is_read)
+        .filter((notification) => String(notification.type ?? "").toLowerCase() !== "plan_invite")
+        .length +
       incomingPlanInvites.filter((invite) => normalizeInviteStatus(invite.status) === "pending").length,
     [cloudNotifications, incomingPlanInvites]
   );
@@ -3274,7 +3346,7 @@ export default function App() {
       label: "File",
       content: (
         <>
-          <button className="ef-menu-item" type="button" onClick={() => { setMonthAnchor(startOfMonth(new Date())); setMenuOpen(null); }}>
+          <button className="ef-menu-item" type="button" onClick={() => { goToMonth(new Date(), 0); setMenuOpen(null); }}>
             Jump to Today
           </button>
           <div className="ef-menu-divider" />
@@ -3460,7 +3532,7 @@ export default function App() {
         </Panel>
 
         <div
-          className="calendar-grid"
+          className={`calendar-grid ${isMonthTransitioning ? (monthTransitionDirection > 0 ? "is-month-enter-next" : monthTransitionDirection < 0 ? "is-month-enter-prev" : "is-month-enter-fade") : ""}`}
           onTouchStart={onCalendarTouchStart}
           onTouchEnd={onCalendarTouchEnd}
         >
@@ -4267,7 +4339,7 @@ export default function App() {
                           const participantStripeColors = getGoingStripeColorsForPlan(plan);
                           const ownerCloudPerson = cloudFriendPeople.find((person) => person.id === plan.ownerId);
                           const ownerLocalPerson = store.people.find((person) => person.id === plan.ownerId);
-                          const isSelfOwner = plan.ownerId === selfPersonId;
+                          const isSelfOwner = normalizeIdentity(plan.ownerId) === viewerOwnerId;
                           const ownerName = isSelfOwner ? "You" : ownerLocalPerson?.name ?? ownerCloudPerson?.name ?? "Friend";
                           const ownerAvatar = isSelfOwner ? authAvatarUrl : ownerCloudPerson?.avatarUrl ?? null;
                           return (
@@ -4304,7 +4376,7 @@ export default function App() {
                                 <span className={`notification-chip ${
                                   viewerInviteStatus
                                     ? `status-${viewerInviteStatus}`
-                                    : plan.ownerId === selfPersonId
+                                    : normalizeIdentity(plan.ownerId) === viewerOwnerId
                                       ? "status-going"
                                       : "status-read"
                                 }`}>
@@ -4316,7 +4388,7 @@ export default function App() {
                                         : viewerInviteStatus === "cant"
                                           ? "Can't"
                                           : "Pending"
-                                    : plan.ownerId === selfPersonId
+                                    : normalizeIdentity(plan.ownerId) === viewerOwnerId
                                       ? "Owner"
                                       : "Shared"}
                                 </span>
@@ -4397,7 +4469,7 @@ export default function App() {
                 >
                   <FaEdit />
                 </button>
-                {planDetailsPlan.ownerId === selfPersonId ? (
+                {normalizeIdentity(planDetailsPlan.ownerId) === viewerOwnerId ? (
                   <button
                     type="button"
                     className="icon-action small ef-modal-head-action is-delete"
@@ -4719,7 +4791,7 @@ export default function App() {
                             getGoingStripeColorsForPlan(relatedPlan)
                           )
                         : undefined;
-                      const isSelfOwner = relatedPlan ? relatedPlan.ownerId === selfPersonId : false;
+                      const isSelfOwner = relatedPlan ? normalizeIdentity(relatedPlan.ownerId) === viewerOwnerId : false;
                       const ownerCloudPerson = relatedPlan
                         ? cloudFriendPeople.find((person) => person.id === relatedPlan.ownerId)
                         : null;

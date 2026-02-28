@@ -29,10 +29,120 @@ body,
   font-family: var(--font-main);
 }
 
+@media (hover: none) and (pointer: coarse) {
+  button,
+  [role="button"],
+  .ef-button {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button:focus:not(:focus-visible),
+  [role="button"]:focus:not(:focus-visible),
+  .ef-button:focus:not(:focus-visible) {
+    outline: none;
+    box-shadow: none;
+  }
+}
+
 .calendar-app {
   min-height: 100vh;
   display: grid;
   position: relative;
+}
+
+.calendar-app button:not(.day-cell):not(.footer-side-button):not(.create-plan-button),
+.calendar-app [role="button"],
+.calendar-app .secondary-pill,
+.calendar-app .day-plan-bar {
+  transition: transform 90ms ease, filter 120ms ease;
+}
+
+.planner-footer .footer-side-button,
+.planner-footer .create-plan-button {
+  transition: filter 170ms ease, box-shadow 170ms ease;
+  will-change: transform, filter;
+}
+
+.planner-footer .footer-side-button:active:not(:disabled),
+.planner-footer .footer-side-button:focus-visible:not(:disabled),
+.planner-footer .create-plan-button:active:not(:disabled),
+.planner-footer .create-plan-button:focus-visible:not(:disabled) {
+  filter: brightness(0.86);
+  box-shadow: inset 0 0 0 999px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .calendar-app button:not(.day-cell):not(.footer-side-button):not(.create-plan-button):hover:not(:disabled),
+  .calendar-app [role="button"]:hover:not(:disabled),
+  .calendar-app .secondary-pill:hover:not(:disabled),
+  .calendar-app .day-plan-bar:hover {
+    transform: translateY(-1px);
+    filter: brightness(1.03);
+  }
+
+  .planner-footer .footer-side-button:hover:not(:disabled),
+  .planner-footer .create-plan-button:hover:not(:disabled) {
+    transform: translate(-50%, -50%);
+    filter: brightness(1.03);
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
+  }
+
+  .planner-footer .footer-side-button:active:not(:disabled),
+  .planner-footer .create-plan-button:active:not(:disabled) {
+    transform: translate(-50%, -50%);
+    filter: brightness(0.86);
+    box-shadow: inset 0 0 0 999px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.2);
+  }
+}
+
+.calendar-app button:not(.day-cell):not(.footer-side-button):not(.create-plan-button):active:not(:disabled),
+.calendar-app [role="button"]:active:not(:disabled),
+.calendar-app .secondary-pill:active:not(:disabled),
+.calendar-app .day-plan-bar:active {
+  transform: scale(0.985);
+  filter: brightness(0.86);
+}
+
+.calendar-app .calendar-grid > button.day-cell {
+  transition: box-shadow 120ms ease;
+}
+
+.calendar-app .calendar-grid > button.day-cell:active:not(:disabled) {
+  filter: none;
+  box-shadow: inset 0 0 0 999px rgba(0, 0, 0, 0.16) !important;
+}
+
+:root[data-reduce-motion="true"] .calendar-app button:not(.day-cell):not(.footer-side-button):not(.create-plan-button),
+:root[data-reduce-motion="true"] .calendar-app [role="button"],
+:root[data-reduce-motion="true"] .calendar-app .secondary-pill,
+:root[data-reduce-motion="true"] .calendar-app .day-plan-bar,
+:root[data-reduce-motion="true"] .planner-footer .footer-side-button,
+:root[data-reduce-motion="true"] .planner-footer .create-plan-button {
+  transition: none !important;
+  animation: none !important;
+}
+
+:root[data-reduce-motion="true"] .calendar-app button:not(.day-cell):not(.footer-side-button):not(.create-plan-button):hover:not(:disabled),
+:root[data-reduce-motion="true"] .calendar-app button:not(.day-cell):not(.footer-side-button):not(.create-plan-button):active:not(:disabled),
+:root[data-reduce-motion="true"] .calendar-app [role="button"]:hover:not(:disabled),
+:root[data-reduce-motion="true"] .calendar-app [role="button"]:active:not(:disabled),
+:root[data-reduce-motion="true"] .calendar-app .secondary-pill:hover:not(:disabled),
+:root[data-reduce-motion="true"] .calendar-app .secondary-pill:active:not(:disabled),
+:root[data-reduce-motion="true"] .calendar-app .day-plan-bar:hover,
+:root[data-reduce-motion="true"] .calendar-app .day-plan-bar:active,
+:root[data-reduce-motion="true"] .planner-footer .footer-side-button:hover:not(:disabled),
+:root[data-reduce-motion="true"] .planner-footer .footer-side-button:active:not(:disabled),
+:root[data-reduce-motion="true"] .planner-footer .create-plan-button:hover:not(:disabled) {
+  transform: none !important;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :root[data-reduce-motion="true"] .planner-footer .footer-side-button:hover:not(:disabled),
+  :root[data-reduce-motion="true"] .planner-footer .footer-side-button:active:not(:disabled),
+  :root[data-reduce-motion="true"] .planner-footer .create-plan-button:hover:not(:disabled),
+  :root[data-reduce-motion="true"] .planner-footer .create-plan-button:active:not(:disabled) {
+    transform: translate(-50%, -50%) !important;
+  }
 }
 
 .person-button {
@@ -1606,6 +1716,49 @@ body,
   overflow: hidden;
 }
 
+.calendar-grid.is-month-enter-next {
+  animation: month-enter-next 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.calendar-grid.is-month-enter-prev {
+  animation: month-enter-prev 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.calendar-grid.is-month-enter-fade {
+  animation: month-enter-fade 180ms ease;
+}
+
+@keyframes month-enter-next {
+  from {
+    opacity: 0.72;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes month-enter-prev {
+  from {
+    opacity: 0.72;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes month-enter-fade {
+  from {
+    opacity: 0.78;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 .day-cell {
   min-height: 0;
   height: 100%;
@@ -2724,6 +2877,19 @@ body,
     margin: 0;
   }
 
+  .planner-footer .footer-side-button:hover:not(:disabled),
+  .planner-footer .create-plan-button:hover:not(:disabled) {
+    transform: none;
+    filter: none;
+  }
+
+  .planner-footer .footer-side-button:active:not(:disabled),
+  .planner-footer .create-plan-button:active:not(:disabled) {
+    transform: none;
+    filter: brightness(0.86);
+    box-shadow: inset 0 0 0 999px rgba(0, 0, 0, 0.16);
+  }
+
   .planner-footer .footer-side-notifications {
     grid-column: 1;
   }
@@ -2813,6 +2979,43 @@ body,
   }
 }
 
+@media (max-width: 760px) and (hover: hover) and (pointer: fine) {
+  .planner-footer .footer-side-button:hover:not(:disabled),
+  .planner-footer .create-plan-button:hover:not(:disabled) {
+    transform: none;
+    filter: brightness(1.03);
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
+  }
+}
+
+@media (max-width: 760px) {
+  :root[data-reduce-motion="true"] .planner-footer .footer-side-button,
+  :root[data-reduce-motion="true"] .planner-footer .create-plan-button {
+    transition: none !important;
+    animation: none !important;
+    transform: none !important;
+    filter: none !important;
+    box-shadow: none !important;
+    will-change: auto !important;
+  }
+
+  :root[data-reduce-motion="true"] .planner-footer .footer-side-button:hover:not(:disabled),
+  :root[data-reduce-motion="true"] .planner-footer .footer-side-button:focus:not(:disabled),
+  :root[data-reduce-motion="true"] .planner-footer .create-plan-button:hover:not(:disabled),
+  :root[data-reduce-motion="true"] .planner-footer .create-plan-button:focus:not(:disabled) {
+    transform: none !important;
+    filter: none !important;
+    box-shadow: none !important;
+  }
+
+  :root[data-reduce-motion="true"] .planner-footer .footer-side-button:active:not(:disabled),
+  :root[data-reduce-motion="true"] .planner-footer .create-plan-button:active:not(:disabled) {
+    transform: none !important;
+    filter: brightness(0.86) !important;
+    box-shadow: inset 0 0 0 999px rgba(0, 0, 0, 0.16) !important;
+  }
+}
+
 @media (max-width: 390px) {
   .planner-footer .ef-footer-actions {
     gap: 4px;
@@ -2838,6 +3041,60 @@ body,
     height: 19px;
     padding: 0 5px;
     font-size: 0.66rem;
+  }
+}
+
+/* Authoritative footer interaction rules (placed last to beat earlier conflicts). */
+.planner-footer .footer-side-button,
+.planner-footer .create-plan-button {
+  transition: transform 90ms ease, filter 120ms ease, box-shadow 120ms ease !important;
+}
+
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  :root[data-reduce-motion="false"] .planner-footer .footer-side-button:hover:not(:disabled),
+  :root[data-reduce-motion="false"] .planner-footer .create-plan-button:hover:not(:disabled) {
+    transform: translate(-50%, calc(-50% - 1px)) !important;
+    filter: brightness(1.03) !important;
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22) !important;
+  }
+
+  :root[data-reduce-motion="false"] .planner-footer .footer-side-button:active:not(:disabled),
+  :root[data-reduce-motion="false"] .planner-footer .create-plan-button:active:not(:disabled) {
+    transform: translate(-50%, -50%) scale(0.985) !important;
+    filter: brightness(0.86) !important;
+    box-shadow: inset 0 0 0 999px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.2) !important;
+  }
+}
+
+@media (max-width: 760px) {
+  :root[data-reduce-motion="false"] .planner-footer .footer-side-button:hover:not(:disabled),
+  :root[data-reduce-motion="false"] .planner-footer .create-plan-button:hover:not(:disabled) {
+    transform: translateY(-1px) !important;
+    filter: brightness(1.03) !important;
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22) !important;
+  }
+
+  :root[data-reduce-motion="false"] .planner-footer .footer-side-button:active:not(:disabled),
+  :root[data-reduce-motion="false"] .planner-footer .create-plan-button:active:not(:disabled) {
+    transform: scale(0.985) !important;
+    filter: brightness(0.86) !important;
+    box-shadow: inset 0 0 0 999px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.2) !important;
+  }
+
+  :root[data-reduce-motion="true"] .planner-footer .footer-side-button,
+  :root[data-reduce-motion="true"] .planner-footer .create-plan-button {
+    transition: none !important;
+    animation: none !important;
+    transform: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+    will-change: auto !important;
+  }
+
+  :root[data-reduce-motion="true"] .planner-footer .footer-side-button:active:not(:disabled),
+  :root[data-reduce-motion="true"] .planner-footer .create-plan-button:active:not(:disabled) {
+    filter: brightness(0.86) !important;
+    box-shadow: inset 0 0 0 999px rgba(0, 0, 0, 0.16) !important;
   }
 }
 
