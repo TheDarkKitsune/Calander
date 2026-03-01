@@ -2856,6 +2856,66 @@ export default function App() {
     setCloudNotifications((current) => current.filter((notification) => !ids.includes(notification.id)));
   };
 
+  const clearLocalCacheStorage = async () => {
+    const confirmed = window.confirm(
+      "Warning: This will clear local Calendar data on this device, including plans, groups, people, entries, and notification cache. Cloud account data is not deleted. Continue?"
+    );
+    if (!confirmed) return;
+
+    const localPushToken = localStorage.getItem(PUSH_TOKEN_STORAGE_KEY);
+    if (socialUserId && localPushToken) {
+      void disablePushToken(socialUserId, localPushToken);
+    }
+    if (socialUserId && cloudNotifications.length > 0) {
+      const notificationIds = cloudNotifications.map((notification) => notification.id);
+      void clearNotificationsByIds(notificationIds);
+    }
+
+    const resetStore = createDefaultStore();
+    const resetSelfId = resetStore.people[0]?.id ?? null;
+    setStore(resetStore);
+    setSelectedPersonId(resetSelfId);
+    setPlans([]);
+    setSharedPlans([]);
+    setCloudNotifications([]);
+    setIncomingPlanInvites([]);
+    setOwnedPlanInvites([]);
+    setHiddenFriendIds([]);
+    setHiddenGroupIds([]);
+    setCollapsedPersonIds([]);
+    setPlanDetailsPlanId(null);
+    setCreatePlanOpen(false);
+    setPlansListOpen(false);
+    setNotificationsOpen(false);
+    setNotificationsTab("activity");
+    setDayModalDate(null);
+    setGroupCreatorOpen(false);
+    setPersonCreatorOpen(false);
+    setEditingGroupId(null);
+    setEditingPersonId(null);
+    setInviteActionMessage("");
+    setFriendRequestMessage("");
+    setCloudRoomDraft("");
+    setCloudRoomId("");
+    setCloudJoinCodeDraft("");
+    setCloudAutoSync(true);
+    setLastSyncAt(null);
+    setSyncState("idle");
+    setSyncMessage("Local cache/storage cleared.");
+    sharedPlanIdsRef.current = [];
+    lastSharedSyncSignatureRef.current = "";
+    seenActivityNotificationIdsRef.current.clear();
+    seenPendingInviteIdsRef.current.clear();
+    activityAutoReadPendingRef.current.clear();
+    systemNotificationHydratedRef.current = false;
+
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(PLAN_STORAGE_KEY);
+    localStorage.removeItem(CLOUD_ROOM_KEY);
+    localStorage.removeItem(CLOUD_AUTO_SYNC_KEY);
+    localStorage.removeItem(PUSH_TOKEN_STORAGE_KEY);
+  };
+
   useEffect(() => {
     void refreshCloudFriends();
   }, [refreshCloudFriends]);
@@ -4377,6 +4437,18 @@ export default function App() {
             onChange={(event) => setHideOutsideMonthDays(event.target.checked)}
             label="Hide non-month days"
           />
+          <Panel variant="card" borderWidth={1} className="prefs-section">
+            <div className="preferences-danger-zone">
+              <p className="cloud-meta">
+                Clear local cache/storage for this device (plans, groups, people, calendar entries, and cached notifications).
+              </p>
+              <div className="ef-modal-actions">
+                <Button type="button" variant="delete" onClick={() => void clearLocalCacheStorage()}>
+                  Clear Cache / Storage
+                </Button>
+              </div>
+            </div>
+          </Panel>
         </PreferencesModal>
         <Modal
           isOpen={plansListOpen}
