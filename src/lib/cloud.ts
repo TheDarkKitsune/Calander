@@ -1,5 +1,7 @@
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import {
+  clearAuthOverrideTokens,
+  clearSharedAuthOverrideTokens,
   hasAuthOverrideTokens,
   readAuthOverrideTokens,
   readSharedAuthOverrideTokens,
@@ -53,6 +55,19 @@ const createSupabaseClient = () =>
 const supabase: SupabaseClient | null = isCloudConfigured
   ? (globalThis.__calanderSupabase ?? (globalThis.__calanderSupabase = createSupabaseClient()))
   : null;
+let overrideRefreshRetryAfterMs = 0;
+let lastFailedOverrideRefreshToken: string | null = null;
+
+const isMissingDeletedPlansTableError = (error: unknown) => {
+  const code = String((error as { code?: string } | null)?.code ?? "").toLowerCase();
+  const message = String((error as { message?: string } | null)?.message ?? "").toLowerCase();
+  return (
+    code === "42p01" ||
+    code === "pgrst205" ||
+    message.includes("calendar_deleted_shared_plans") ||
+    message.includes("relation") && message.includes("does not exist")
+  );
+};
 
 const readOverrideTokens = async () => {
   const local = readAuthOverrideTokens();
@@ -111,17 +126,66 @@ export const syncCloudSessionFromOverride = async () => {
   if (!supabase) {
     return { user: null as User | null, error: "Cloud is not configured." };
   }
+  if (Date.now() < overrideRefreshRetryAfterMs) {
+    return { user: null as User | null, error: "Cloud session override temporarily paused due to invalid refresh token." };
+  }
   const tokens = await readOverrideTokens();
   if (!tokens?.access_token || !tokens.refresh_token) {
+    overrideRefreshRetryAfterMs = 0;
+    lastFailedOverrideRefreshToken = null;
     return { user: null as User | null, error: null as string | null };
+  }
+  if (lastFailedOverrideRefreshToken && tokens.refresh_token === lastFailedOverrideRefreshToken) {
+    return { user: null as User | null, error: "Cloud session override blocked due to invalid refresh token. Sign in again." };
   }
   const { error: sessionError } = await supabase.auth.setSession({
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token,
   });
   if (sessionError) {
-    return { user: null as User | null, error: sessionError.message };
+    const message = String(sessionError.message ?? "");
+    const normalized = message.toLowerCase();
+    const isRefreshTokenFailure =
+      normalized.includes("refresh") ||
+      normalized.includes("invalid grant") ||
+      normalized.includes("invalid refresh token") ||
+      normalized.includes("jwt") ||
+      normalized.includes("expired");
+    if (isRefreshTokenFailure) {
+      overrideRefreshRetryAfterMs = Date.now() + 5 * 60 * 1000;
+      lastFailedOverrideRefreshToken = tokens.refresh_token;
+      clearAuthOverrideTokens();
+      await clearSharedAuthOverrideTokens();
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        // ignore sign-out cleanup failures
+      }
+      try {
+        if (typeof window !== "undefined") {
+          const projectRef = (() => {
+            try {
+              const url = new URL(supabaseUrl);
+              return url.hostname.split(".")[0] ?? "";
+            } catch {
+              return "";
+            }
+          })();
+          const defaultKey = projectRef ? `sb-${projectRef}-auth-token` : "";
+          if (defaultKey) window.localStorage.removeItem(defaultKey);
+          window.localStorage.removeItem("calander-auth");
+        }
+      } catch {
+        // ignore local storage cleanup failures
+      }
+      return {
+        user: null as User | null,
+        error: `Cloud session expired. Cleared stale auth override; sign in again.`,
+      };
+    }
+    return { user: null as User | null, error: message };
   }
+  lastFailedOverrideRefreshToken = null;
   const { data, error } = await supabase.auth.getUser();
   return { user: data.user ?? null, error: error?.message ?? null };
 };
@@ -305,6 +369,16 @@ export const signInCloud = async (email: string, password: string) => {
   if (!supabase) {
     return { error: "Cloud is not configured." };
   }
+  // Manual sign-in should take precedence over stale shared override sessions.
+  clearAuthOverrideTokens();
+  await clearSharedAuthOverrideTokens();
+  overrideRefreshRetryAfterMs = 0;
+  lastFailedOverrideRefreshToken = null;
+  try {
+    await supabase.auth.signOut();
+  } catch {
+    // ignore sign-out cleanup failures before sign-in
+  }
   const { error } = await supabase.auth.signInWithPassword({ email, password });
   return { error: error?.message ?? null };
 };
@@ -447,6 +521,7 @@ export type SharedGroupPayload = {
 
 export type SharedPlanPayload = {
   id: string;
+  source_plan_id?: string | null;
   owner_id: string;
   name: string;
   summary?: string | null;
@@ -463,6 +538,7 @@ export type SharedPlanPayload = {
   recurrence_custom_days?: number;
   recurrence_count?: number;
   recurrence_infinite?: boolean;
+  exception_dates?: string[];
 };
 
 export type SharedGroupRecord = {
@@ -548,23 +624,73 @@ export const upsertSharedGroups = async (ownerId: string, groups: SharedGroupPay
 
 export const upsertSharedPlans = async (ownerId: string, plans: SharedPlanPayload[]) => {
   if (!supabase) return { error: "Cloud is not configured." };
-  const payload = plans.map((plan) => ({ ...plan, owner_id: ownerId }));
+  let payload = plans.map((plan) => ({ ...plan, owner_id: ownerId }));
+  try {
+    const { data: deletedRows, error: deletedError } = await supabase
+      .from("calendar_deleted_shared_plans")
+      .select("plan_id")
+      .eq("owner_id", ownerId);
+    if (!deletedError) {
+      const deletedIds = new Set(
+        ((deletedRows ?? []) as Array<{ plan_id: string }>).map((row) => String(row.plan_id ?? "").trim()).filter(Boolean)
+      );
+      if (deletedIds.size > 0) {
+        payload = payload.filter((plan) => !deletedIds.has(String(plan.id ?? "").trim()));
+      }
+    } else if (!isMissingDeletedPlansTableError(deletedError)) {
+      return { error: deletedError.message ?? null };
+    }
+  } catch {
+    // Ignore tombstone lookup failures on older schema.
+  }
+  if (payload.length === 0) return { error: null as string | null };
   const { error } = await supabase.from("calendar_shared_plans").upsert(payload, { onConflict: "id" });
-  return { error: error?.message ?? null };
+  if (!error) return { error: null as string | null };
+
+  const message = String(error.message ?? "").toLowerCase();
+  const missingOverrideColumns =
+    message.includes("source_plan_id") ||
+    message.includes("exception_dates") ||
+    message.includes("column") && (message.includes("source_plan") || message.includes("exception"));
+  if (!missingOverrideColumns) return { error: error.message ?? null };
+
+  const fallbackPayload = payload.map(({ source_plan_id: _source, exception_dates: _exceptions, ...rest }) => rest);
+  const { error: fallbackError } = await supabase
+    .from("calendar_shared_plans")
+    .upsert(fallbackPayload, { onConflict: "id" });
+  return { error: fallbackError?.message ?? null };
 };
 
 export const deleteSharedPlan = async (ownerId: string, planId: string) => {
   if (!supabase) return { error: "Cloud is not configured." };
+  const { error: tombstoneError } = await supabase
+    .from("calendar_deleted_shared_plans")
+    .upsert([{ owner_id: ownerId, plan_id: planId, deleted_at: new Date().toISOString() }], { onConflict: "owner_id,plan_id" });
+  if (tombstoneError && !isMissingDeletedPlansTableError(tombstoneError)) {
+    return { error: tombstoneError.message ?? null };
+  }
   const { error } = await supabase
     .from("calendar_shared_plans")
     .delete()
     .eq("id", planId)
     .eq("owner_id", ownerId);
+  if (error && !tombstoneError) {
+    await supabase
+      .from("calendar_deleted_shared_plans")
+      .delete()
+      .eq("owner_id", ownerId)
+      .eq("plan_id", planId);
+  }
   return { error: error?.message ?? null };
 };
 
 export const syncSharedPlanInvites = async (ownerId: string, planId: string, inviteeIds: string[]) => {
   if (!supabase) return { error: "Cloud is not configured." };
+  const normalizedInviteeIds = [...new Set(
+    inviteeIds
+      .map((value) => String(value ?? "").trim().toLowerCase())
+      .filter(Boolean)
+  )];
 
   const { data: existingRows, error: existingError } = await supabase
     .from("calendar_plan_invites")
@@ -573,13 +699,25 @@ export const syncSharedPlanInvites = async (ownerId: string, planId: string, inv
   if (existingError) return { error: existingError.message };
 
   const existing = (existingRows ?? []) as Array<{ id: string; invitee_id: string; inviter_id: string; status: string }>;
-  const existingByInvitee = new Map(existing.map((row) => [row.invitee_id, row]));
-  const desiredSet = new Set(inviteeIds);
+  const desiredSet = new Set(normalizedInviteeIds);
 
-  const toInsert = inviteeIds.filter((id) => !existingByInvitee.has(id));
+  // Delete rows that are no longer desired OR belong to a different inviter for this plan.
+  // This keeps one canonical row per (plan, invitee) owned by the actual plan owner.
   const toDelete = existing
-    .filter((row) => row.inviter_id === ownerId && !desiredSet.has(row.invitee_id))
+    .filter((row) => !desiredSet.has(row.invitee_id) || row.inviter_id !== ownerId)
     .map((row) => row.id);
+
+  if (toDelete.length > 0) {
+    const { error } = await supabase.from("calendar_plan_invites").delete().in("id", toDelete);
+    if (error) return { error: error.message };
+  }
+
+  const existingOwnedInvitees = new Set(
+    existing
+      .filter((row) => row.inviter_id === ownerId && desiredSet.has(row.invitee_id))
+      .map((row) => row.invitee_id)
+  );
+  const toInsert = normalizedInviteeIds.filter((id) => !existingOwnedInvitees.has(id));
 
   if (toInsert.length > 0) {
     const rows = toInsert.map((inviteeId) => ({
@@ -588,18 +726,19 @@ export const syncSharedPlanInvites = async (ownerId: string, planId: string, inv
       invitee_id: inviteeId,
       status: "pending",
     }));
-    const { error } = await supabase.from("calendar_plan_invites").insert(rows);
+    const { error } = await supabase
+      .from("calendar_plan_invites")
+      .upsert(rows, { onConflict: "plan_id,invitee_id" });
     if (error) {
       const code = ((error as { code?: string } | null)?.code ?? "").toLowerCase();
       const message = (error.message ?? "").toLowerCase();
-      const isDuplicateConflict = code === "23505" || message.includes("duplicate key") || message.includes("conflict");
+      const isDuplicateConflict =
+        code === "23505" ||
+        message.includes("duplicate key") ||
+        message.includes("conflict") ||
+        message.includes("cannot affect row a second time");
       if (!isDuplicateConflict) return { error: error.message };
     }
-  }
-
-  if (toDelete.length > 0) {
-    const { error } = await supabase.from("calendar_plan_invites").delete().in("id", toDelete);
-    if (error) return { error: error.message };
   }
 
   return { error: null as string | null };
@@ -614,6 +753,19 @@ export const listVisibleSharedPlans = async (userId: string) => {
     .select("*")
     .eq("owner_id", userId);
   if (ownedError) return { plans: [] as SharedPlanPayload[], error: ownedError.message };
+  const { data: deletedRows, error: deletedError } = await supabase
+    .from("calendar_deleted_shared_plans")
+    .select("plan_id")
+    .eq("owner_id", userId);
+  const deletedIds = new Set<string>();
+  if (!deletedError) {
+    ((deletedRows ?? []) as Array<{ plan_id: string }>)
+      .map((row) => String(row.plan_id ?? "").trim())
+      .filter(Boolean)
+      .forEach((id) => deletedIds.add(id));
+  } else if (!isMissingDeletedPlansTableError(deletedError)) {
+    return { plans: [] as SharedPlanPayload[], error: deletedError.message };
+  }
 
   const { data: acceptedInvites, error: inviteError } = await supabase
     .from("calendar_plan_invites")
@@ -640,7 +792,7 @@ export const listVisibleSharedPlans = async (userId: string) => {
   }
 
   const merged = [
-    ...((ownedRows ?? []) as SharedPlanPayload[]),
+    ...(((ownedRows ?? []) as SharedPlanPayload[]).filter((plan) => !deletedIds.has(String(plan.id ?? "").trim()))),
     ...invitedRows,
     ...((invitedByVisibilityRows ?? []) as SharedPlanPayload[]),
   ];
@@ -743,14 +895,22 @@ export const clearNotificationsByIds = async (notificationIds: string[]) => {
   return { error: error?.message ?? null };
 };
 
+export const clearCalendarSocialDataDev = async () => {
+  if (!supabase) return { error: "Cloud is not configured.", data: null as Record<string, unknown> | null };
+  const { data, error } = await supabase.functions.invoke("calendar-dev-clear-social-data", {
+    body: { confirm: true },
+  });
+  if (error) return { error: error.message, data: null as Record<string, unknown> | null };
+  return { error: null as string | null, data: (data ?? null) as Record<string, unknown> | null };
+};
+
 export const onCalendarRealtimeChange = (userId: string, onChange: () => void) => {
   if (!supabase) return () => undefined;
   const channel = supabase
     .channel(`calendar-realtime-${userId}`)
     .on("postgres_changes", { event: "*", schema: "public", table: "calendar_shared_plans" }, onChange)
-    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_plan_invites", filter: `invitee_id=eq.${userId}` }, onChange)
-    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_plan_invites", filter: `inviter_id=eq.${userId}` }, onChange)
-    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_notifications", filter: `user_id=eq.${userId}` }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_plan_invites" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_notifications" }, onChange)
     .subscribe();
 
   return () => {

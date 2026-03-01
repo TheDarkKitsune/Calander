@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { Button, Dropdown, FloatingFooter, Input, MainHeader, Modal, Panel, PreferencesModal, SideMenu, SideMenuSubmenu, Toggle, applyTheme, getStoredTheme } from "@enderfall/ui";
 import { FaBell, FaCircle, FaEdit, FaList, FaPen, FaTrashAlt, FaUserFriends, FaUsers } from "react-icons/fa";
 import { FaInfinity } from "react-icons/fa6";
-import { readSharedPreferences, writeSharedPreferences, isTauri as runtimeIsTauri } from "@enderfall/runtime";
+import { readLaunchToken, readSharedPreferences, writeSharedPreferences, isTauri as runtimeIsTauri } from "@enderfall/runtime";
 import {
   createCloudRoom,
   getCloudUser,
@@ -19,6 +19,7 @@ import {
   markNotificationRead,
   deleteNotification,
   clearNotificationsByIds,
+  clearCalendarSocialDataDev,
   registerPushToken,
   disablePushToken,
   onCalendarRealtimeChange,
@@ -80,6 +81,7 @@ type Plan = {
   recurrenceCustomDays?: number;
   recurrenceCount?: number;
   recurrenceInfinite?: boolean;
+  exceptionDates?: string[];
 };
 type LegacyPlan = {
   id?: string;
@@ -103,6 +105,7 @@ type LegacyPlan = {
   recurrenceCustomDays?: number;
   recurrenceCount?: number;
   recurrenceInfinite?: boolean;
+  exceptionDates?: string[];
 };
 type RecurrenceType = "weekly" | "fortnightly" | "four-weekly" | "monthly" | "yearly" | "custom";
 type InviteResponse = "going" | "maybe" | "cant";
@@ -141,6 +144,14 @@ const NOTIFICATIONS_ENABLED_KEY = "enderfall-calander-notifications-enabled";
 const PUSH_TOKEN_STORAGE_KEY = "enderfall-calander-push-token";
 const THEME_STORAGE_KEY = "themeMode";
 const APP_ID = "enderfall-calander";
+const DEV_ADMIN_USER_IDS = String(import.meta.env.VITE_DEV_ADMIN_USER_IDS ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const DEV_ADMIN_EMAILS = String(import.meta.env.VITE_DEV_ADMIN_EMAILS ?? "")
+  .split(",")
+  .map((value) => value.trim().toLowerCase())
+  .filter(Boolean);
 const isMobilePlatform = () => {
   if (typeof navigator === "undefined") return false;
   const ua = navigator.userAgent.toLowerCase();
@@ -307,13 +318,18 @@ const normalizeGroupRef = (value: string, fallback = "") => {
   if (!shared) return normalizeLocalGroupId(value, fallback);
   return normalizeLocalGroupId(shared.groupKey, fallback);
 };
-const encodeSharedTargetGroupIds = (plan: Pick<Plan, "isPrivate" | "excludedPersonIds">) => {
+const encodeSharedTargetGroupIds = (plan: Pick<Plan, "isPrivate" | "excludedPersonIds" | "targetGroupIds">) => {
   const encoded = [] as string[];
+  for (const groupId of plan.targetGroupIds) {
+    const normalized = String(groupId ?? "").trim();
+    if (!normalized) continue;
+    encoded.push(normalized);
+  }
   if (plan.isPrivate) encoded.push(SHARED_PRIVATE_TAG);
   for (const personId of plan.excludedPersonIds) {
     if (isUuid(personId)) encoded.push(`${SHARED_EXCLUDE_TAG_PREFIX}${personId.toLowerCase()}`);
   }
-  return encoded;
+  return [...new Set(encoded)];
 };
 const decodeSharedTargetGroupIds = (value: string[] | null | undefined) => {
   const targetGroupIds: string[] = [];
@@ -550,6 +566,9 @@ const normalizePlans = (value: unknown, groups: Group[], defaultOwnerId: string)
         recurrenceCustomDays: Math.max(1, Number(plan.recurrenceCustomDays ?? 7)),
         recurrenceCount: Math.max(0, Number(plan.recurrenceCount ?? 0)),
         recurrenceInfinite: Boolean(plan.recurrenceInfinite),
+        exceptionDates: Array.isArray(plan.exceptionDates)
+          ? plan.exceptionDates.filter((value): value is string => typeof value === "string")
+          : [],
       } satisfies Plan;
     })
     .filter((plan): plan is Plan => Boolean(plan));
@@ -599,6 +618,10 @@ const getPlanIdentity = (plan: Pick<Plan, "id" | "sourcePlanId">) =>
   plan.sourcePlanId && plan.sourcePlanId.trim() ? plan.sourcePlanId : plan.id;
 const isRecurringPlan = (plan: Pick<Plan, "recurring" | "recurrenceInfinite" | "recurrenceCount">) =>
   Boolean(plan.recurring) && (Boolean(plan.recurrenceInfinite) || Number(plan.recurrenceCount ?? 0) > 0);
+const hasPlanExceptionOnDate = (plan: Pick<Plan, "exceptionDates">, dateKey: string) =>
+  Array.isArray(plan.exceptionDates) && plan.exceptionDates.includes(dateKey);
+const isPlanActiveOnDate = (plan: Pick<Plan, "fromDate" | "toDate" | "exceptionDates">, dateKey: string) =>
+  isDateInRange(dateKey, plan.fromDate, plan.toDate) && !hasPlanExceptionOnDate(plan, dateKey);
 const getRecurrenceMaxOccurrences = (plan: Pick<Plan, "recurring" | "recurrenceInfinite" | "recurrenceCount">) => {
   if (!Boolean(plan.recurring)) return 1;
   if (plan.recurrenceInfinite) return 260;
@@ -616,7 +639,7 @@ const plansOverlap = (a: Pick<Plan, "fromDate" | "toDate" | "allDay" | "fromTime
 const formatConflictSummary = (plan: Pick<Plan, "name" | "fromDate" | "toDate" | "allDay" | "fromTime" | "toTime" | "location">) =>
   `${plan.name} (${plan.fromDate}${plan.allDay ? "" : ` ${plan.fromTime}`} -> ${plan.toDate}${plan.allDay ? " All day" : ` ${plan.toTime}`}${plan.location ? ` @ ${plan.location}` : ""})`;
 const getPlanDayWindowMinutes = (plan: Plan, dateKey: string) => {
-  if (!isDateInRange(dateKey, plan.fromDate, plan.toDate)) return null;
+  if (!isPlanActiveOnDate(plan, dateKey)) return null;
   if (plan.allDay) return { start: 0, end: 24 * 60 };
   const start = dateKey === plan.fromDate ? timeToMinutes(plan.fromTime) : 0;
   const end = dateKey === plan.toDate ? timeToMinutes(plan.toTime) : 24 * 60;
@@ -690,6 +713,18 @@ const addRecurrenceStep = (
   nextFrom.setFullYear(nextFrom.getFullYear() + 1);
   nextTo.setFullYear(nextTo.getFullYear() + 1);
   return { fromDate: fromDateObject(nextFrom), toDate: fromDateObject(nextTo) };
+};
+const confirmWithFallback = async (message: string) => {
+  if (typeof window === "undefined" || typeof window.confirm !== "function") return false;
+  try {
+    const result = window.confirm(message) as unknown;
+    if (typeof (result as Promise<unknown>)?.then === "function") {
+      return Boolean(await (result as Promise<unknown>));
+    }
+    return Boolean(result);
+  } catch {
+    return false;
+  }
 };
 const getPlanOccurrenceWindowsInRange = (
   plan: Pick<Plan, "fromDate" | "toDate" | "recurring" | "recurrenceType" | "recurrenceCustomDays" | "recurrenceInfinite" | "recurrenceCount">,
@@ -816,6 +851,8 @@ export default function App() {
     const raw = localStorage.getItem(NOTIFICATIONS_ENABLED_KEY);
     return raw === null ? true : raw === "true";
   });
+  const [isDevAdminUser, setIsDevAdminUser] = useState(false);
+  const [devClearBusy, setDevClearBusy] = useState(false);
   const sharedThemeUpdatedAtRef = useRef<number>(0);
   const sharedThemeApplyRef = useRef<ThemeMode | null>(null);
   const sharedAnimationsApplyRef = useRef<boolean | null>(null);
@@ -863,6 +900,7 @@ export default function App() {
   const [createPlanOpen, setCreatePlanOpen] = useState(false);
   const [plansListOpen, setPlansListOpen] = useState(false);
   const [planDetailsPlanId, setPlanDetailsPlanId] = useState<string | null>(null);
+  const [planDetailsDateKey, setPlanDetailsDateKey] = useState<string | null>(null);
   const [friendsListOpen, setFriendsListOpen] = useState(false);
   const [groupsListOpen, setGroupsListOpen] = useState(false);
   const [personCreatorOpen, setPersonCreatorOpen] = useState(false);
@@ -903,6 +941,13 @@ export default function App() {
   const [planRecurrenceInfinite, setPlanRecurrenceInfinite] = useState(false);
   const [planModalMessage, setPlanModalMessage] = useState("");
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
+  const [editingInstanceContext, setEditingInstanceContext] = useState<{ sourcePlanId: string; dateKey: string } | null>(null);
+  const [editScopePrompt, setEditScopePrompt] = useState<{ planId: string; dateKey: string } | null>(null);
+  const [uninviteConfirmPrompt, setUninviteConfirmPrompt] = useState<{
+    personId: string;
+    personName: string;
+    status: InviteResponse;
+  } | null>(null);
   const [hiddenFriendIds, setHiddenFriendIds] = useState<string[]>([]);
   const [hiddenGroupIds, setHiddenGroupIds] = useState<string[]>([]);
   const [collapsedPersonIds, setCollapsedPersonIds] = useState<string[]>([]);
@@ -911,6 +956,7 @@ export default function App() {
   const [monthTransitionDirection, setMonthTransitionDirection] = useState<-1 | 0 | 1>(0);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const dayTimelineRef = useRef<HTMLDivElement | null>(null);
+  const planModalScrollRef = useRef<HTMLDivElement | null>(null);
   const monthTransitionTimerRef = useRef<number | null>(null);
   const activityListRef = useRef<HTMLDivElement | null>(null);
   const activityAutoReadPendingRef = useRef<Set<string>>(new Set());
@@ -922,12 +968,50 @@ export default function App() {
     () => normalizeIdentity(socialUserId ?? selfPersonId),
     [selfPersonId, socialUserId]
   );
+  useEffect(() => {
+    let cancelled = false;
+    const resolveAdmin = async () => {
+      const cloudId = String(cloudUser?.id ?? "").trim();
+      const cloudEmail = String(cloudUser?.email ?? "").trim().toLowerCase();
+      const envMatch = (cloudId && DEV_ADMIN_USER_IDS.includes(cloudId)) || (cloudEmail && DEV_ADMIN_EMAILS.includes(cloudEmail));
+
+      if (!runtimeIsTauri) {
+        if (!cancelled) setIsDevAdminUser(Boolean(envMatch));
+        return;
+      }
+
+      const token = await readLaunchToken(APP_ID).catch(() => null);
+      const tokenAdmin = Boolean(token?.isAdmin);
+      if (!cancelled) setIsDevAdminUser(Boolean(tokenAdmin || envMatch));
+    };
+    void resolveAdmin();
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudUser?.email, cloudUser?.id]);
 
   const storeRef = useRef(store);
   const remoteApplyRef = useRef(false);
   const pushTimerRef = useRef<number | null>(null);
   const sharedPlanIdsRef = useRef<string[]>([]);
+  const remoteOwnedSharedPlanIdsRef = useRef<Set<string>>(new Set());
   const lastSharedSyncSignatureRef = useRef("");
+  const sharedSyncTimerRef = useRef<number | null>(null);
+  const sharedSyncInFlightRef = useRef(false);
+  const pendingSharedSyncSignatureRef = useRef<string | null>(null);
+  const pendingSharedSyncStartedAtRef = useRef<number>(0);
+  const deletingSharedPlanIdsRef = useRef<Set<string>>(new Set());
+  const suppressReaddSharedPlanUntilRef = useRef<Map<string, number>>(new Map());
+  const refreshSharedPlansInFlightRef = useRef(false);
+  const refreshSharedPlansQueuedRef = useRef(false);
+  const refreshSharedPlansLastAtRef = useRef(0);
+  const refreshNotificationsInFlightRef = useRef(false);
+  const refreshNotificationsQueuedRef = useRef(false);
+  const refreshNotificationsLastAtRef = useRef(0);
+  const refreshOwnedInvitesInFlightRef = useRef(false);
+  const refreshOwnedInvitesQueuedRef = useRef(false);
+  const refreshOwnedInvitesLastAtRef = useRef(0);
+  const calendarRefreshTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     storeRef.current = store;
@@ -1498,13 +1582,16 @@ export default function App() {
     if (!runtimeIsTauri || isMobileClient) return;
     const syncFromHub = async () => {
       if (await hasAnyCloudOverrideTokens()) {
-        await syncCloudSessionFromOverride();
-        return;
+        const result = await syncCloudSessionFromOverride();
+        if (result.error) {
+          setAuthMessage(result.error);
+          setCloudUser(null);
+          setCloudProfileAvatarUrl(null);
+        }
+      } else {
+        // No shared override tokens available: keep local/manual auth session intact.
+        setAuthMessage("");
       }
-      await signOutCloud();
-      setCloudUser(null);
-      setCloudProfileAvatarUrl(null);
-      setAuthMessage("");
     };
     void syncFromHub();
     const interval = window.setInterval(() => {
@@ -1519,7 +1606,10 @@ export default function App() {
 
     const resolveUser = async () => {
       if (runtimeIsTauri && !isMobileClient) {
-        await syncCloudSessionFromOverride();
+        const result = await syncCloudSessionFromOverride();
+        if (result.error && active) {
+          setAuthMessage(result.error);
+        }
       }
       const user = await getCloudUser();
       if (!active) return;
@@ -1809,6 +1899,18 @@ export default function App() {
     }
     return statusMap;
   }, [ownedPlanInvites]);
+  const ownedInviteeIdsByPlan = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const invite of ownedPlanInvites) {
+      const planId = String(invite.plan_id ?? "").trim();
+      const inviteeId = String(invite.invitee_id ?? "").trim();
+      if (!planId || !inviteeId) continue;
+      const current = map.get(planId) ?? [];
+      if (!current.includes(inviteeId)) current.push(inviteeId);
+      map.set(planId, current);
+    }
+    return map;
+  }, [ownedPlanInvites]);
   const incomingInviteStatusByPlan = useMemo(() => {
     const map = new Map<string, "pending" | InviteResponse>();
     for (const invite of incomingPlanInvites) {
@@ -1837,6 +1939,51 @@ export default function App() {
   const planDetailsPlan = useMemo(
     () => (planDetailsPlanId ? allPlans.find((plan) => plan.id === planDetailsPlanId) ?? null : null),
     [allPlans, planDetailsPlanId]
+  );
+  const planDetailsDayWindow = useMemo(() => {
+    if (!planDetailsPlan || !planDetailsDateKey) return null;
+    return getPlanDayWindowMinutes(planDetailsPlan, planDetailsDateKey);
+  }, [planDetailsDateKey, planDetailsPlan]);
+  const planDetailsWhenLabel = useMemo(() => {
+    if (!planDetailsPlan) return "";
+    if (planDetailsDateKey && planDetailsDayWindow) {
+      if (planDetailsPlan.allDay) return `${planDetailsDateKey} (All day)`;
+      const startHour = Math.floor(planDetailsDayWindow.start / 60);
+      const startMinute = planDetailsDayWindow.start % 60;
+      const endHour = Math.floor(planDetailsDayWindow.end / 60);
+      const endMinute = planDetailsDayWindow.end % 60;
+      return `${planDetailsDateKey} | ${String(startHour).padStart(2, "0")}:${String(startMinute).padStart(2, "0")} to ${String(endHour).padStart(2, "0")}:${String(endMinute).padStart(2, "0")}`;
+    }
+    return `${planDetailsPlan.fromDate} to ${planDetailsPlan.toDate}${planDetailsPlan.allDay ? " (All day)" : ` | ${planDetailsPlan.fromTime} to ${planDetailsPlan.toTime}`}`;
+  }, [planDetailsDateKey, planDetailsDayWindow, planDetailsPlan]);
+  const planDetailsRecurrenceLabel = useMemo(() => {
+    if (!planDetailsPlan?.recurring) return null;
+    const type = normalizeRecurrenceType(planDetailsPlan.recurrenceType);
+    const customDays = Math.max(1, Number(planDetailsPlan.recurrenceCustomDays ?? 7));
+    const intervalLabel = type === "weekly"
+      ? "every 7 days"
+      : type === "fortnightly"
+        ? "every 14 days"
+        : type === "four-weekly"
+          ? "every 28 days"
+          : type === "custom"
+            ? `every ${customDays} day${customDays === 1 ? "" : "s"}`
+            : type === "monthly"
+              ? "every month"
+              : "every year";
+    const count = Math.max(0, Number(planDetailsPlan.recurrenceCount ?? 0)) + 1;
+    const countLabel = planDetailsPlan.recurrenceInfinite ? "infinite" : `${count} instance${count === 1 ? "" : "s"}`;
+    return `${intervalLabel}, ${countLabel}`;
+  }, [planDetailsPlan]);
+  const planDetailsIsInstanceOverride = useMemo(
+    () =>
+      Boolean(
+        planDetailsPlan &&
+        planDetailsPlan.sourcePlanId &&
+        planDetailsPlan.sourcePlanId.trim() &&
+        planDetailsPlan.sourcePlanId !== planDetailsPlan.id
+      ),
+    [planDetailsPlan]
   );
   const groupedPlansForList = useMemo(() => {
     const sorted = [...allPlans].sort((a, b) => {
@@ -1886,6 +2033,7 @@ export default function App() {
         if (!isPlanVisibleByGroups(plan) || !isPlanVisibleByFriendToggle(plan) || !planAppliesToPerson(plan, personId)) {
           return [];
         }
+        if (hasPlanExceptionOnDate(plan, dateKey)) return [];
         return expandPlanOccurrencesInRange(plan, dateKey, dateKey);
       }),
     [allPlans, isPlanVisibleByFriendToggle, isPlanVisibleByGroups, planAppliesToPerson]
@@ -1895,6 +2043,7 @@ export default function App() {
       allPlans.flatMap((plan) => {
         if (!isPlanVisibleByGroups(plan) || !isPlanVisibleByFriendToggle(plan)) return [];
         if (personId !== selfPersonId && !planAppliesToPerson(plan, personId)) return [];
+        if (hasPlanExceptionOnDate(plan, dateKey)) return [];
         return expandPlanOccurrencesInRange(plan, dateKey, dateKey);
       }),
     [allPlans, isPlanVisibleByFriendToggle, isPlanVisibleByGroups, planAppliesToPerson, selfPersonId]
@@ -2087,7 +2236,7 @@ export default function App() {
     for (const day of calendarDays) {
       const dayKey = toKeyDate(day);
       const dayItems = relevantPlans
-        .filter((plan) => isDateInRange(dayKey, plan.fromDate, plan.toDate))
+        .filter((plan) => isPlanActiveOnDate(plan, dayKey))
         .map((plan) => ({ plan, lane: laneByPlanId.get(plan.id) ?? -1 }))
         .filter((entry) => entry.lane >= 0)
         .sort((left, right) => left.lane - right.lane);
@@ -2122,13 +2271,15 @@ export default function App() {
     setDayModalDate(null);
   };
 
-  const openPlanDetailsFromPill = (event: MouseEvent<HTMLElement>, planId: string) => {
+  const openPlanDetailsFromPill = (event: MouseEvent<HTMLElement>, planId: string, dateKey?: string) => {
     event.preventDefault();
     event.stopPropagation();
     setPlanDetailsPlanId(planId);
+    setPlanDetailsDateKey(dateKey ?? null);
   };
 
   const togglePlanInvite = (personId: string) => {
+    const previousScrollTop = planModalScrollRef.current?.scrollTop ?? null;
     const isCurrentlyInvited = planInvitedIds.includes(personId);
     if (isCurrentlyInvited && editingPlanId) {
       const status = inviteResponseByPlanAndPerson.get(`${editingPlanId}:${personId}`) ?? "pending";
@@ -2137,16 +2288,22 @@ export default function App() {
           store.people.find((person) => person.id === personId)?.name ??
           cloudFriendPeople.find((person) => person.id === personId)?.name ??
           "This person";
-        const statusLabel = status === "going" ? "Going" : status === "maybe" ? "Maybe" : "Can't";
-        const confirmed = window.confirm(
-          `${personName} has already responded "${statusLabel}" to this event. Continue and remove them from the plan?`
-        );
-        if (!confirmed) return;
+        setUninviteConfirmPrompt({
+          personId,
+          personName,
+          status,
+        });
+        return;
       }
     }
     setPlanInvitedIds((current) =>
       current.includes(personId) ? current.filter((id) => id !== personId) : [...current, personId]
     );
+    if (previousScrollTop !== null && planModalScrollRef.current) {
+      window.requestAnimationFrame(() => {
+        if (planModalScrollRef.current) planModalScrollRef.current.scrollTop = previousScrollTop;
+      });
+    }
   };
 
   const resetPlanForm = () => {
@@ -2171,6 +2328,7 @@ export default function App() {
     setPlanRecurrenceInfinite(false);
     setPlanModalMessage("");
     setEditingPlanId(null);
+    setEditingInstanceContext(null);
   };
 
   const openCreatePlanModal = () => {
@@ -2180,6 +2338,7 @@ export default function App() {
 
   const openEditPlanModal = (plan: Plan) => {
     if (!canEditPlan(plan)) return;
+    setEditingInstanceContext(null);
     setEditingPlanId(plan.id);
     setPlanName(plan.name);
     setPlanSummary(plan.summary ?? "");
@@ -2204,19 +2363,116 @@ export default function App() {
     setCreatePlanOpen(true);
   };
 
-  const deletePlan = (planId: string) => {
+  const openEditPlanDayInstanceModal = (plan: Plan, dateKey: string) => {
+    if (!canEditPlan(plan)) return;
+    setEditingInstanceContext({ sourcePlanId: getPlanIdentity(plan), dateKey });
+    setEditingPlanId(null);
+    setPlanName(plan.name);
+    setPlanSummary(plan.summary ?? "");
+    setPlanLocation(plan.location ?? "");
+    setPlanTargetGroupIds([...plan.targetGroupIds]);
+    setPlanIsPrivate(plan.isPrivate);
+    setPlanCustomizeMembers(plan.excludedPersonIds.length > 0);
+    setPlanExcludedPersonIds([...plan.excludedPersonIds]);
+    setPlanFromDate(dateKey);
+    setPlanToDate(dateKey);
+    setPlanAllDay(plan.allDay);
+    setPlanFromTime(plan.fromTime);
+    setPlanToTime(plan.toTime);
+    setPlanInvitedIds([...plan.invitedIds]);
+    setPlanRecurring(false);
+    setPlanRecurrenceType("weekly");
+    setPlanCustomRecurrenceDays(7);
+    setPlanRecurrenceCount(1);
+    setPlanRecurrenceInfinite(false);
+    setPlanModalMessage("");
+    setCreatePlanOpen(true);
+  };
+
+  const requestEditPlan = (plan: Plan, selectedDate: string | null) => {
+    if (
+      selectedDate &&
+      (Boolean(plan.recurring) || plan.fromDate !== plan.toDate) &&
+      isPlanActiveOnDate(plan, selectedDate)
+    ) {
+      setEditScopePrompt({ planId: plan.id, dateKey: selectedDate });
+      return;
+    }
+    openEditPlanModal(plan);
+  };
+  const suppressTouchToggleFocus = (event: React.FocusEvent<HTMLInputElement>) => {
+    if (typeof window === "undefined") return;
+    if (window.matchMedia("(hover: none) and (pointer: coarse)").matches) {
+      event.currentTarget.blur();
+    }
+  };
+
+  const deletePlan = async (planId: string) => {
     const removed = allPlans.find((plan) => plan.id === planId);
     if (!removed) return;
     if (normalizeIdentity(removed.ownerId) !== viewerOwnerId) return;
+    deletingSharedPlanIdsRef.current.add(planId);
+    if (sharedSyncTimerRef.current !== null) {
+      window.clearTimeout(sharedSyncTimerRef.current);
+      sharedSyncTimerRef.current = null;
+    }
+    pendingSharedSyncSignatureRef.current = null;
+    pendingSharedSyncStartedAtRef.current = 0;
     setPlans((current) => current.filter((plan) => plan.id !== planId));
     setSharedPlans((current) => current.filter((plan) => plan.id !== planId));
-    if (cloudUser?.id && isUuid(cloudUser.id)) {
-      void deleteSharedPlan(cloudUser.id, planId);
+    sharedPlanIdsRef.current = sharedPlanIdsRef.current.filter((id) => id !== planId);
+    remoteOwnedSharedPlanIdsRef.current.delete(planId);
+    lastSharedSyncSignatureRef.current = "";
+    if (socialUserId && isUuid(socialUserId)) {
+      const { error } = await deleteSharedPlan(socialUserId, planId);
+      if (error) {
+        setPlans((current) => [removed, ...current.filter((plan) => plan.id !== removed.id)]);
+        setSyncState("error");
+        setSyncMessage(`Delete plan failed: ${error}`);
+        deletingSharedPlanIdsRef.current.delete(planId);
+        suppressReaddSharedPlanUntilRef.current.delete(planId);
+        return;
+      }
     }
+    suppressReaddSharedPlanUntilRef.current.set(planId, Date.now() + 15000);
+    setPlans((current) => current.filter((plan) => plan.id !== planId));
+    setSharedPlans((current) => current.filter((plan) => plan.id !== planId));
+    deletingSharedPlanIdsRef.current.delete(planId);
     if (editingPlanId === planId) {
       setCreatePlanOpen(false);
       setEditingPlanId(null);
     }
+  };
+
+  const revertPlanInstance = async (instancePlanId: string) => {
+    const instancePlan = allPlans.find((plan) => plan.id === instancePlanId);
+    if (!instancePlan) return;
+    const parentPlanId = instancePlan.sourcePlanId?.trim() || "";
+    if (!parentPlanId || parentPlanId === instancePlan.id) return;
+    const parentPlan = allPlans.find((plan) => plan.id === parentPlanId);
+    if (!parentPlan) {
+      setPlanModalMessage("Cannot revert: original recurring plan was not found.");
+      return;
+    }
+    if (normalizeIdentity(parentPlan.ownerId) !== viewerOwnerId) return;
+
+    setPlans((current) =>
+      current
+        .filter((plan) => plan.id !== instancePlanId)
+        .map((plan) => {
+          if (plan.id !== parentPlanId) return plan;
+          const dateToRestore = String(instancePlan.fromDate ?? "").trim();
+          if (!dateToRestore) return plan;
+          return {
+            ...plan,
+            exceptionDates: (plan.exceptionDates ?? []).filter((value) => value !== dateToRestore),
+          };
+        })
+    );
+    setSharedPlans((current) => current.filter((plan) => plan.id !== instancePlanId));
+    setPlanDetailsPlanId(parentPlanId);
+    setPlanDetailsDateKey(instancePlan.fromDate);
+    setPlanModalMessage("Instance reverted to original recurring plan.");
   };
 
   const savePlan = (event: FormEvent) => {
@@ -2253,6 +2509,7 @@ export default function App() {
 
     const baseCandidate: Plan = {
       id: editingPlanId ?? createId(planName),
+      sourcePlanId: existingPlanForEdit?.sourcePlanId,
       name: planName.trim(),
       summary: planSummary.trim(),
       location: planLocation.trim(),
@@ -2271,15 +2528,16 @@ export default function App() {
       recurrenceCustomDays: Math.max(1, planCustomRecurrenceDays),
       recurrenceCount: Math.max(0, planRecurrenceCount),
       recurrenceInfinite: planRecurrenceInfinite,
+      exceptionDates: existingPlanForEdit?.exceptionDates ?? [],
     };
     const conflicts = allPlans
-      .filter((plan) => getPlanIdentity(plan) !== (editingPlanId ?? ""))
+      .filter((plan) => getPlanIdentity(plan) !== (editingPlanId ?? editingInstanceContext?.sourcePlanId ?? ""))
       .filter((plan) => (normalizeIdentity(plan.ownerId) === viewerOwnerId || plan.invitedIds.includes(selfPersonId)))
       .filter((plan) => plansOverlapWithRecurrence(plan, baseCandidate));
-    if (conflicts.length > 0) {
-      setPlanModalMessage(`You're busy at that time. Conflicts with: ${conflicts.slice(0, 2).map((plan) => formatConflictSummary(plan)).join(" | ")}`);
-      return;
-    }
+    const conflictWarning =
+      conflicts.length > 0
+        ? ` Warning: overlaps with ${conflicts.slice(0, 2).map((plan) => formatConflictSummary(plan)).join(" | ")}.`
+        : "";
 
     const normalizedExcludedIds = planCustomizeMembers
       ? planExcludedPersonIds.filter((personId) => planSelectedGroupMemberIds.includes(personId))
@@ -2288,6 +2546,7 @@ export default function App() {
 
     const nextPlan: Plan = {
       id: editingPlanId ?? createId(planName),
+      sourcePlanId: existingPlanForEdit?.sourcePlanId,
       name: planName.trim(),
       summary: planSummary.trim(),
       location: planLocation.trim(),
@@ -2306,18 +2565,34 @@ export default function App() {
       recurrenceCustomDays: Math.max(1, planCustomRecurrenceDays),
       recurrenceCount: Math.max(0, planRecurrenceCount),
       recurrenceInfinite: planRecurrenceInfinite,
+      exceptionDates: existingPlanForEdit?.exceptionDates ?? [],
     };
-    if (editingPlanId) {
+    if (editingInstanceContext) {
+      const sourcePlanId = editingInstanceContext.sourcePlanId;
+      const exceptionDate = editingInstanceContext.dateKey;
+      const instancePlan: Plan = { ...nextPlan, sourcePlanId };
+      setPlans((current) => {
+        const updatedParent = current.map((plan) => {
+          if (getPlanIdentity(plan) !== sourcePlanId) return plan;
+          const nextExceptions = [...new Set([...(plan.exceptionDates ?? []), exceptionDate])];
+          return { ...plan, exceptionDates: nextExceptions };
+        });
+        return [instancePlan, ...updatedParent];
+      });
+      setPlanModalMessage(`Day instance created. Parent plan keeps all other days.${conflictWarning}`);
+      setEditingInstanceContext(null);
+      setCreatePlanOpen(false);
+    } else if (editingPlanId) {
       const existingInLocal = plans.some((plan) => plan.id === editingPlanId);
       setPlans((current) => {
         if (existingInLocal) return current.map((plan) => (plan.id === editingPlanId ? nextPlan : plan));
         return [nextPlan, ...current];
       });
       setSharedPlans((current) => current.filter((plan) => plan.id !== editingPlanId));
-      setPlanModalMessage("Plan updated.");
+      setPlanModalMessage(`Plan updated.${conflictWarning}`);
     } else {
       setPlans((current) => [nextPlan, ...current]);
-      setPlanModalMessage(planRecurring ? "Recurring plan created." : "Plan created.");
+      setPlanModalMessage(`${planRecurring ? "Recurring plan created." : "Plan created."}${conflictWarning}`);
     }
   };
 
@@ -2605,14 +2880,30 @@ export default function App() {
   }, [socialUserId]);
 
   const refreshSharedPlans = useCallback(async () => {
+    const nowTick = Date.now();
+    if (refreshSharedPlansInFlightRef.current) {
+      refreshSharedPlansQueuedRef.current = true;
+      return;
+    }
+    if (nowTick - refreshSharedPlansLastAtRef.current < 900) return;
+    refreshSharedPlansInFlightRef.current = true;
+    refreshSharedPlansLastAtRef.current = nowTick;
     if (!socialUserId) {
       setSharedPlans([]);
+      refreshSharedPlansInFlightRef.current = false;
       return;
     }
     const { plans: remotePlans, error } = await listVisibleSharedPlans(socialUserId);
     if (error) {
       setSyncState("error");
       setSyncMessage(`Shared plans failed: ${error}`);
+      refreshSharedPlansInFlightRef.current = false;
+      if (refreshSharedPlansQueuedRef.current) {
+        refreshSharedPlansQueuedRef.current = false;
+        window.setTimeout(() => {
+          void refreshSharedPlans();
+        }, 250);
+      }
       return;
     }
     const normalized: Plan[] = remotePlans.map((plan) => {
@@ -2620,6 +2911,7 @@ export default function App() {
       const isOwnedByViewer = normalizeIdentity(plan.owner_id) === viewerOwnerId;
       return {
         id: plan.id,
+        sourcePlanId: typeof plan.source_plan_id === "string" && plan.source_plan_id.trim() ? plan.source_plan_id : undefined,
         name: plan.name,
         summary: typeof plan.summary === "string" ? plan.summary : "",
         location: typeof plan.location === "string" ? plan.location : "",
@@ -2632,34 +2924,89 @@ export default function App() {
         allDay: Boolean(plan.all_day),
         fromTime: plan.from_time || "09:00",
         toTime: plan.to_time || "17:00",
-        invitedIds: isOwnedByViewer && Array.isArray(plan.invited_ids) ? plan.invited_ids : [],
+        invitedIds: [],
         recurring: Boolean(plan.recurring),
         recurrenceType: normalizeRecurrenceType(plan.recurrence_type),
         recurrenceCustomDays: Math.max(1, Number(plan.recurrence_custom_days ?? 7)),
         recurrenceCount: Math.max(0, Number(plan.recurrence_count ?? 0)),
         recurrenceInfinite: Boolean(plan.recurrence_infinite),
+        exceptionDates: Array.isArray(plan.exception_dates)
+          ? plan.exception_dates.filter((value): value is string => typeof value === "string")
+          : [],
       };
     });
-    const ownedByViewer = normalized.filter((plan) => normalizeIdentity(plan.ownerId) === viewerOwnerId);
-    const sharedByOthers = normalized.filter((plan) => normalizeIdentity(plan.ownerId) !== viewerOwnerId);
-    if (ownedByViewer.length > 0) {
-      setPlans((current) => {
-        const ownedById = new Map(ownedByViewer.map((plan) => [plan.id, plan]));
-        const merged = current.map((plan) => ownedById.get(plan.id) ?? plan);
-        const existingIds = new Set(merged.map((plan) => plan.id));
-        for (const plan of ownedByViewer) {
-          if (!existingIds.has(plan.id)) merged.push(plan);
-        }
-        return merged;
-      });
+    const now = Date.now();
+    const suppressReaddMap = suppressReaddSharedPlanUntilRef.current;
+    for (const [planId, until] of suppressReaddMap.entries()) {
+      if (until <= now) suppressReaddMap.delete(planId);
     }
+    const deletingPlanIds = deletingSharedPlanIdsRef.current;
+    const ownedByViewer = normalized.filter(
+      (plan) =>
+        normalizeIdentity(plan.ownerId) === viewerOwnerId &&
+        !deletingPlanIds.has(plan.id) &&
+        (suppressReaddMap.get(plan.id) ?? 0) <= now
+    );
+    const sharedByOthers = normalized.filter((plan) => normalizeIdentity(plan.ownerId) !== viewerOwnerId);
+    const nextRemoteOwnedIds = new Set(ownedByViewer.map((plan) => plan.id));
+    const previousRemoteOwnedIds = remoteOwnedSharedPlanIdsRef.current;
+    const hasPendingOwnedSync =
+      Boolean(pendingSharedSyncSignatureRef.current) &&
+      pendingSharedSyncSignatureRef.current !== lastSharedSyncSignatureRef.current &&
+      Date.now() - pendingSharedSyncStartedAtRef.current < 12000;
+    setPlans((current) => {
+      const filteredCurrent = current.filter((plan) => {
+        if (normalizeIdentity(plan.ownerId) !== viewerOwnerId) return true;
+        if (deletingPlanIds.has(plan.id)) return false;
+        if (hasPendingOwnedSync) return true;
+        if (!previousRemoteOwnedIds.has(plan.id)) return true;
+        return nextRemoteOwnedIds.has(plan.id);
+      });
+      const ownedById = new Map(ownedByViewer.map((plan) => [plan.id, plan]));
+      const merged = filteredCurrent.map((plan) => {
+        const remote = ownedById.get(plan.id);
+        if (!remote) return plan;
+        if (normalizeIdentity(plan.ownerId) === viewerOwnerId && hasPendingOwnedSync) {
+          return plan;
+        }
+        const explicitInvitees = ownedInviteeIdsByPlan.get(plan.id) ?? plan.invitedIds;
+        return { ...remote, invitedIds: explicitInvitees };
+      });
+      const existingIds = new Set(merged.map((plan) => plan.id));
+      for (const plan of ownedByViewer) {
+        if (!existingIds.has(plan.id)) {
+          merged.push({
+            ...plan,
+            invitedIds: ownedInviteeIdsByPlan.get(plan.id) ?? [],
+          });
+        }
+      }
+      return merged;
+    });
+    remoteOwnedSharedPlanIdsRef.current = nextRemoteOwnedIds;
     setSharedPlans(sharedByOthers);
-  }, [socialUserId, viewerOwnerId]);
+    refreshSharedPlansInFlightRef.current = false;
+    if (refreshSharedPlansQueuedRef.current) {
+      refreshSharedPlansQueuedRef.current = false;
+      window.setTimeout(() => {
+        void refreshSharedPlans();
+      }, 250);
+    }
+  }, [ownedInviteeIdsByPlan, socialUserId, viewerOwnerId]);
 
   const refreshNotifications = useCallback(async () => {
+    const nowTick = Date.now();
+    if (refreshNotificationsInFlightRef.current) {
+      refreshNotificationsQueuedRef.current = true;
+      return;
+    }
+    if (nowTick - refreshNotificationsLastAtRef.current < 900) return;
+    refreshNotificationsInFlightRef.current = true;
+    refreshNotificationsLastAtRef.current = nowTick;
     if (!socialUserId) {
       setCloudNotifications([]);
       setIncomingPlanInvites([]);
+      refreshNotificationsInFlightRef.current = false;
       return;
     }
     const [{ notifications, error: notificationsError }, { invites, error: invitesError }] = await Promise.all([
@@ -2668,17 +3015,56 @@ export default function App() {
     ]);
     if (!notificationsError) setCloudNotifications(notifications);
     if (!invitesError) setIncomingPlanInvites(invites);
+    refreshNotificationsInFlightRef.current = false;
+    if (refreshNotificationsQueuedRef.current) {
+      refreshNotificationsQueuedRef.current = false;
+      window.setTimeout(() => {
+        void refreshNotifications();
+      }, 250);
+    }
   }, [socialUserId]);
 
   const refreshOwnedPlanInvites = useCallback(async () => {
+    const nowTick = Date.now();
+    if (refreshOwnedInvitesInFlightRef.current) {
+      refreshOwnedInvitesQueuedRef.current = true;
+      return;
+    }
+    if (nowTick - refreshOwnedInvitesLastAtRef.current < 900) return;
+    refreshOwnedInvitesInFlightRef.current = true;
+    refreshOwnedInvitesLastAtRef.current = nowTick;
     if (!socialUserId) {
       setOwnedPlanInvites([]);
+      refreshOwnedInvitesInFlightRef.current = false;
       return;
     }
     const { invites, error } = await listOwnedPlanInvites(socialUserId);
-    if (error) return;
-    setOwnedPlanInvites(invites);
+    if (!error) setOwnedPlanInvites(invites);
+    refreshOwnedInvitesInFlightRef.current = false;
+    if (refreshOwnedInvitesQueuedRef.current) {
+      refreshOwnedInvitesQueuedRef.current = false;
+      window.setTimeout(() => {
+        void refreshOwnedPlanInvites();
+      }, 250);
+    }
   }, [socialUserId]);
+
+  const scheduleCalendarRefresh = useCallback((delayMs = 350) => {
+    if (calendarRefreshTimerRef.current !== null) return;
+    calendarRefreshTimerRef.current = window.setTimeout(() => {
+      calendarRefreshTimerRef.current = null;
+      void refreshSharedPlans();
+      void refreshNotifications();
+      void refreshOwnedPlanInvites();
+    }, delayMs);
+  }, [refreshNotifications, refreshOwnedPlanInvites, refreshSharedPlans]);
+
+  useEffect(() => () => {
+    if (calendarRefreshTimerRef.current !== null) {
+      window.clearTimeout(calendarRefreshTimerRef.current);
+      calendarRefreshTimerRef.current = null;
+    }
+  }, []);
 
   const openFriendRequestModal = () => {
     setFriendRequestUsername("");
@@ -2856,8 +3242,35 @@ export default function App() {
     setCloudNotifications((current) => current.filter((notification) => !ids.includes(notification.id)));
   };
 
+  const clearCloudCalendarSocialDataDev = async () => {
+    if (!import.meta.env.DEV || !isDevAdminUser) return;
+    const confirmed = await confirmWithFallback(
+      "DEV ADMIN WARNING: This will permanently delete ALL rows from calendar_shared_plans, calendar_plan_invites, and calendar_notifications for the entire project. Continue?"
+    );
+    if (!confirmed) return;
+    setDevClearBusy(true);
+    const { error } = await clearCalendarSocialDataDev();
+    setDevClearBusy(false);
+    if (error) {
+      setSyncState("error");
+      setSyncMessage(`Dev clear failed: ${error}`);
+      return;
+    }
+
+    setPlans([]);
+    setSharedPlans([]);
+    setCloudNotifications([]);
+    setIncomingPlanInvites([]);
+    setOwnedPlanInvites([]);
+    seenActivityNotificationIdsRef.current.clear();
+    seenPendingInviteIdsRef.current.clear();
+    activityAutoReadPendingRef.current.clear();
+    setSyncState("idle");
+    setSyncMessage("Dev admin clear completed.");
+  };
+
   const clearLocalCacheStorage = async () => {
-    const confirmed = window.confirm(
+    const confirmed = await confirmWithFallback(
       "Warning: This will clear local Calendar data on this device, including plans, groups, people, entries, and notification cache. Cloud account data is not deleted. Continue?"
     );
     if (!confirmed) return;
@@ -2884,6 +3297,7 @@ export default function App() {
     setHiddenGroupIds([]);
     setCollapsedPersonIds([]);
     setPlanDetailsPlanId(null);
+    setPlanDetailsDateKey(null);
     setCreatePlanOpen(false);
     setPlansListOpen(false);
     setNotificationsOpen(false);
@@ -2922,30 +3336,24 @@ export default function App() {
 
   useEffect(() => {
     if (!socialUserId || !isCloudConfigured) return;
-    void refreshSharedPlans();
-    void refreshNotifications();
-    void refreshOwnedPlanInvites();
-  }, [socialUserId, refreshNotifications, refreshSharedPlans, refreshOwnedPlanInvites]);
+    scheduleCalendarRefresh(0);
+  }, [socialUserId, scheduleCalendarRefresh]);
 
   useEffect(() => {
     if (!socialUserId || !isCloudConfigured) return;
     const unsubscribe = onCalendarRealtimeChange(socialUserId, () => {
-      void refreshSharedPlans();
-      void refreshNotifications();
-      void refreshOwnedPlanInvites();
+      scheduleCalendarRefresh(300);
     });
     return () => unsubscribe();
-  }, [socialUserId, refreshNotifications, refreshOwnedPlanInvites, refreshSharedPlans]);
+  }, [socialUserId, scheduleCalendarRefresh]);
 
   useEffect(() => {
     if (!socialUserId || !isCloudConfigured) return;
     const interval = window.setInterval(() => {
-      void refreshSharedPlans();
-      void refreshNotifications();
-      void refreshOwnedPlanInvites();
-    }, 5000);
+      scheduleCalendarRefresh(150);
+    }, 15000);
     return () => window.clearInterval(interval);
-  }, [socialUserId, refreshNotifications, refreshOwnedPlanInvites, refreshSharedPlans]);
+  }, [socialUserId, scheduleCalendarRefresh]);
 
   useEffect(() => {
     if (!inviteActionMessage) return;
@@ -3007,11 +3415,26 @@ export default function App() {
     if (!socialUserId || !isCloudConfigured) {
       sharedPlanIdsRef.current = [];
       lastSharedSyncSignatureRef.current = "";
+      if (sharedSyncTimerRef.current !== null) {
+        window.clearTimeout(sharedSyncTimerRef.current);
+        sharedSyncTimerRef.current = null;
+      }
+      sharedSyncInFlightRef.current = false;
+      pendingSharedSyncSignatureRef.current = null;
+      pendingSharedSyncStartedAtRef.current = 0;
       return;
     }
-    const ownedSharedPlans = plans.filter((plan) => (shareRecipientIdsByPlan.get(plan.id)?.length ?? 0) > 0);
+    const now = Date.now();
+    const suppressReaddMap = suppressReaddSharedPlanUntilRef.current;
+    const ownedSharedPlans = plans.filter(
+      (plan) =>
+        normalizeIdentity(plan.ownerId) === viewerOwnerId &&
+        !deletingSharedPlanIdsRef.current.has(plan.id) &&
+        (suppressReaddMap.get(plan.id) ?? 0) <= now
+    );
     const planPayload: SharedPlanPayload[] = ownedSharedPlans.map((plan) => ({
       id: plan.id,
+      source_plan_id: plan.sourcePlanId && plan.sourcePlanId.trim() ? plan.sourcePlanId : null,
       owner_id: socialUserId,
       name: plan.name,
       summary: plan.summary,
@@ -3030,15 +3453,19 @@ export default function App() {
       recurrence_custom_days: Math.max(1, Number(plan.recurrenceCustomDays ?? 7)),
       recurrence_count: Math.max(0, Number(plan.recurrenceCount ?? 0)),
       recurrence_infinite: Boolean(plan.recurrenceInfinite),
+      exception_dates: Array.isArray(plan.exceptionDates)
+        ? [...new Set(plan.exceptionDates.filter((value) => typeof value === "string" && value.trim()))].sort()
+        : [],
     }));
     const sortedPayload = [...planPayload].sort((a, b) => a.id.localeCompare(b.id));
     const inviteSyncPayload = ownedSharedPlans
       .map((plan) => ({
         id: plan.id,
-        invitee_ids: plan.invitedIds
-          .filter((id) => id && id !== socialUserId && isUuid(id))
-          .filter((id) => !plan.excludedPersonIds.includes(id))
-          .sort(),
+        invitee_ids: [...new Set(
+          plan.invitedIds
+            .filter((id) => id && id !== socialUserId && isUuid(id))
+            .filter((id) => !plan.excludedPersonIds.includes(id))
+        )].sort(),
       }))
       .sort((a, b) => a.id.localeCompare(b.id));
     const syncSignature = JSON.stringify({
@@ -3048,13 +3475,22 @@ export default function App() {
     if (syncSignature === lastSharedSyncSignatureRef.current) {
       return;
     }
-    lastSharedSyncSignatureRef.current = syncSignature;
+    pendingSharedSyncSignatureRef.current = syncSignature;
+    pendingSharedSyncStartedAtRef.current = Date.now();
 
-    void (async () => {
+    const runSync = async () => {
+      if (sharedSyncInFlightRef.current) return;
+      const targetSignature = pendingSharedSyncSignatureRef.current;
+      if (!targetSignature || targetSignature === lastSharedSyncSignatureRef.current) return;
+      sharedSyncInFlightRef.current = true;
+
       const upsertResult = await upsertSharedPlans(socialUserId, sortedPayload);
       if (upsertResult.error) {
         setSyncState("error");
         setSyncMessage(`Plan sync failed: ${upsertResult.error}`);
+        sharedSyncInFlightRef.current = false;
+        pendingSharedSyncSignatureRef.current = null;
+        pendingSharedSyncStartedAtRef.current = 0;
         return;
       }
 
@@ -3068,10 +3504,32 @@ export default function App() {
         if (inviteResult.error) {
           setSyncState("error");
           setSyncMessage(`Invite sync failed: ${inviteResult.error}`);
+          sharedSyncInFlightRef.current = false;
+          pendingSharedSyncSignatureRef.current = null;
+          pendingSharedSyncStartedAtRef.current = 0;
           return;
         }
       }
-    })();
+
+      lastSharedSyncSignatureRef.current = targetSignature;
+      sharedSyncInFlightRef.current = false;
+      pendingSharedSyncStartedAtRef.current = 0;
+
+      if (
+        pendingSharedSyncSignatureRef.current &&
+        pendingSharedSyncSignatureRef.current !== targetSignature
+      ) {
+        if (sharedSyncTimerRef.current !== null) window.clearTimeout(sharedSyncTimerRef.current);
+        sharedSyncTimerRef.current = window.setTimeout(() => {
+          void runSync();
+        }, 250);
+      }
+    };
+
+    if (sharedSyncTimerRef.current !== null) window.clearTimeout(sharedSyncTimerRef.current);
+    sharedSyncTimerRef.current = window.setTimeout(() => {
+      void runSync();
+    }, 350);
 
     const previousIds = new Set(sharedPlanIdsRef.current);
     const currentIds = new Set(ownedSharedPlans.map((plan) => plan.id));
@@ -3081,7 +3539,14 @@ export default function App() {
       }
     });
     sharedPlanIdsRef.current = [...currentIds];
-  }, [plans, shareRecipientIdsByPlan, socialUserId]);
+
+    return () => {
+      if (sharedSyncTimerRef.current !== null) {
+        window.clearTimeout(sharedSyncTimerRef.current);
+        sharedSyncTimerRef.current = null;
+      }
+    };
+  }, [plans, shareRecipientIdsByPlan, socialUserId, viewerOwnerId]);
 
   const signIn = async (event: FormEvent) => {
     event.preventDefault();
@@ -3698,15 +4163,15 @@ export default function App() {
                 const startsToday = keyDate === plan.fromDate;
                 const hasPrevInWeek =
                   dayIndex > weekStartIndex &&
-                  isDateInRange(shiftKeyDate(keyDate, -1), plan.fromDate, plan.toDate);
+                  isPlanActiveOnDate(plan, shiftKeyDate(keyDate, -1));
                 if (hasPrevInWeek) return [];
-                const hasPrev = isDateInRange(shiftKeyDate(keyDate, -1), plan.fromDate, plan.toDate);
+                const hasPrev = isPlanActiveOnDate(plan, shiftKeyDate(keyDate, -1));
 
                 const startPct = plan.allDay || !startsToday ? 0 : (timeToMinutes(plan.fromTime) / (24 * 60)) * 100;
                 let runEndIndex = dayIndex;
                 for (let cursor = dayIndex + 1; cursor <= weekEndIndex; cursor += 1) {
                   const cursorKey = toKeyDate(calendarDays[cursor]);
-                  if (!isDateInRange(cursorKey, plan.fromDate, plan.toDate)) break;
+                  if (!isPlanActiveOnDate(plan, cursorKey)) break;
                   runEndIndex = cursor;
                 }
                 const runDays = runEndIndex - dayIndex + 1;
@@ -3715,7 +4180,7 @@ export default function App() {
                   isOtherMonth &&
                   runEndIndex > dayIndex &&
                   calendarDays[runEndIndex].getMonth() === monthAnchor.getMonth();
-                const hasNext = isDateInRange(shiftKeyDate(runEndKey, 1), plan.fromDate, plan.toDate);
+                const hasNext = isPlanActiveOnDate(plan, shiftKeyDate(runEndKey, 1));
                 const endsOnRunEnd = runEndKey === plan.toDate;
                 const runEndPctRaw = plan.allDay || !endsOnRunEnd ? 100 : (timeToMinutes(plan.toTime) / (24 * 60)) * 100;
                 const runEndPct = Math.max(1, runEndPctRaw);
@@ -3769,7 +4234,7 @@ export default function App() {
                         className={`day-plan-bar ${hasPrev ? "is-continued-prev" : ""} ${hasNext ? "is-continued-next" : ""} ${bridgesIntoCurrentMonth ? "bridges-current-month" : ""}`}
                         style={segmentStyle}
                         title={plan.name}
-                        onClick={(event) => openPlanDetailsFromPill(event, getPlanIdentity(plan))}
+                        onClick={(event) => openPlanDetailsFromPill(event, getPlanIdentity(plan), keyDate)}
                       >
                         <span className="day-plan-content">
                           <span className="day-plan-name">{plan.name}</span>
@@ -3859,7 +4324,7 @@ export default function App() {
                                     <div
                                       key={`${person.id}-${plan.id}-${start}-${lane}`}
                                       className="day-time-plan"
-                                      onClick={(event) => openPlanDetailsFromPill(event, getPlanIdentity(plan))}
+                                      onClick={(event) => openPlanDetailsFromPill(event, getPlanIdentity(plan), dayModalKeyDate)}
                                       style={{
                                         top: `${(start / (24 * 60)) * 100}%`,
                                         height: `${Math.max(2, ((end - start) / (24 * 60)) * 100)}%`,
@@ -4103,8 +4568,15 @@ export default function App() {
             </div>
           </div>
         </Modal>
-        <Modal isOpen={createPlanOpen} title={editingPlanId ? "Edit Plan" : "Create Plan"} subtitle="Set time range and invite people" size="wide" onClose={() => setCreatePlanOpen(false)}>
-          <div className="ef-modal-form">
+        <Modal
+          isOpen={createPlanOpen}
+          title={editingInstanceContext ? "Edit Day Instance" : editingPlanId ? "Edit Plan" : "Create Plan"}
+          subtitle="Set time range and invite people"
+          size="wide"
+          className="plan-create-modal"
+          onClose={() => setCreatePlanOpen(false)}
+        >
+          <div className="ef-modal-form" ref={planModalScrollRef}>
             <form className="plan-create-form" onSubmit={savePlan}>
               {planModalMessage ? (
                 <p className={`cloud-status notifications-toast${planModalMessageIsError ? " is-error" : ""}`}>
@@ -4175,13 +4647,20 @@ export default function App() {
                 <Toggle
                   variant="checkbox"
                   checked={planIsPrivate}
+                  onFocus={suppressTouchToggleFocus}
                   onChange={(event) => {
+                    const previousScrollTop = planModalScrollRef.current?.scrollTop ?? null;
                     const checked = event.target.checked;
                     setPlanIsPrivate(checked);
                     if (checked) {
                       setPlanTargetGroupIds([]);
                       setPlanCustomizeMembers(false);
                       setPlanExcludedPersonIds([]);
+                    }
+                    if (previousScrollTop !== null && planModalScrollRef.current) {
+                      window.requestAnimationFrame(() => {
+                        if (planModalScrollRef.current) planModalScrollRef.current.scrollTop = previousScrollTop;
+                      });
                     }
                   }}
                   label="Private plan"
@@ -4190,10 +4669,17 @@ export default function App() {
                   <Toggle
                     variant="checkbox"
                     checked={planCustomizeMembers}
+                    onFocus={suppressTouchToggleFocus}
                     onChange={(event) => {
+                      const previousScrollTop = planModalScrollRef.current?.scrollTop ?? null;
                       const checked = event.target.checked;
                       setPlanCustomizeMembers(checked);
                       if (!checked) setPlanExcludedPersonIds([]);
+                      if (previousScrollTop !== null && planModalScrollRef.current) {
+                        window.requestAnimationFrame(() => {
+                          if (planModalScrollRef.current) planModalScrollRef.current.scrollTop = previousScrollTop;
+                        });
+                      }
                     }}
                     label="Customize group sharing"
                   />
@@ -4208,11 +4694,18 @@ export default function App() {
                       variant="switch"
                       className="plan-invite-item"
                       checked={planExcludedPersonIds.includes(person.id)}
-                      onChange={() =>
+                      onFocus={suppressTouchToggleFocus}
+                      onChange={() => {
+                        const previousScrollTop = planModalScrollRef.current?.scrollTop ?? null;
                         setPlanExcludedPersonIds((current) =>
                           current.includes(person.id) ? current.filter((id) => id !== person.id) : [...current, person.id]
-                        )
-                      }
+                        );
+                        if (previousScrollTop !== null && planModalScrollRef.current) {
+                          window.requestAnimationFrame(() => {
+                            if (planModalScrollRef.current) planModalScrollRef.current.scrollTop = previousScrollTop;
+                          });
+                        }
+                      }}
                       label={person.name}
                     />
                   ))}
@@ -4232,7 +4725,16 @@ export default function App() {
                 <Toggle
                   variant="checkbox"
                   checked={planRecurring}
-                  onChange={(event) => setPlanRecurring(event.target.checked)}
+                  onFocus={suppressTouchToggleFocus}
+                  onChange={(event) => {
+                    const previousScrollTop = planModalScrollRef.current?.scrollTop ?? null;
+                    setPlanRecurring(event.target.checked);
+                    if (previousScrollTop !== null && planModalScrollRef.current) {
+                      window.requestAnimationFrame(() => {
+                        if (planModalScrollRef.current) planModalScrollRef.current.scrollTop = previousScrollTop;
+                      });
+                    }
+                  }}
                   label="Recurring plan"
                 />
               </div>
@@ -4276,7 +4778,16 @@ export default function App() {
                       <Toggle
                         variant="checkbox"
                         checked={planRecurrenceInfinite}
-                        onChange={(event) => setPlanRecurrenceInfinite(event.target.checked)}
+                        onFocus={suppressTouchToggleFocus}
+                        onChange={(event) => {
+                          const previousScrollTop = planModalScrollRef.current?.scrollTop ?? null;
+                          setPlanRecurrenceInfinite(event.target.checked);
+                          if (previousScrollTop !== null && planModalScrollRef.current) {
+                            window.requestAnimationFrame(() => {
+                              if (planModalScrollRef.current) planModalScrollRef.current.scrollTop = previousScrollTop;
+                            });
+                          }
+                        }}
                         aria-label="Infinite recurrence"
                       />
                       <FaInfinity aria-hidden="true" />
@@ -4309,7 +4820,16 @@ export default function App() {
                 <Toggle
                   variant="checkbox"
                   checked={planAllDay}
-                  onChange={(event) => setPlanAllDay(event.target.checked)}
+                  onFocus={suppressTouchToggleFocus}
+                  onChange={(event) => {
+                    const previousScrollTop = planModalScrollRef.current?.scrollTop ?? null;
+                    setPlanAllDay(event.target.checked);
+                    if (previousScrollTop !== null && planModalScrollRef.current) {
+                      window.requestAnimationFrame(() => {
+                        if (planModalScrollRef.current) planModalScrollRef.current.scrollTop = previousScrollTop;
+                      });
+                    }
+                  }}
                   label="All day"
                 />
               </div>
@@ -4331,6 +4851,7 @@ export default function App() {
                           variant="switch"
                           className="plan-invite-item"
                           checked={planInvitedIds.includes(person.id)}
+                          onFocus={suppressTouchToggleFocus}
                           onChange={() => togglePlanInvite(person.id)}
                           disabled={planIsPrivate}
                           aria-label={`Invite ${person.name}`}
@@ -4367,7 +4888,7 @@ export default function App() {
                 )}
               </fieldset>
 
-              <div className="ef-modal-actions">
+              <div className="plan-modal-actions">
                 <Button type="button" variant="ghost" onClick={() => setCreatePlanOpen(false)}>
                   Cancel
                 </Button>
@@ -4449,6 +4970,25 @@ export default function App() {
               </div>
             </div>
           </Panel>
+          {import.meta.env.DEV && isDevAdminUser ? (
+            <Panel variant="card" borderWidth={1} className="prefs-section">
+              <div className="preferences-danger-zone">
+                <p className="cloud-meta">
+                  DEV ADMIN: Clear all rows from cloud calendar tables (shared plans, plan invites, notifications) for the whole project.
+                </p>
+                <div className="ef-modal-actions">
+                  <Button
+                    type="button"
+                    variant="delete"
+                    onClick={() => void clearCloudCalendarSocialDataDev()}
+                    disabled={devClearBusy}
+                  >
+                    {devClearBusy ? "Clearing Cloud Data..." : "Clear Supabase Calendar Tables"}
+                  </Button>
+                </div>
+              </div>
+            </Panel>
+          ) : null}
         </PreferencesModal>
         <Modal
           isOpen={plansListOpen}
@@ -4503,12 +5043,16 @@ export default function App() {
                               style={{
                                 ...getPlanPillStyle(plan, planOwnerColor, participantStripeColors),
                               }}
-                              onClick={() => setPlanDetailsPlanId(plan.id)}
+                              onClick={() => {
+                                setPlanDetailsDateKey(null);
+                                setPlanDetailsPlanId(plan.id);
+                              }}
                               role="button"
                               tabIndex={0}
                               onKeyDown={(event) => {
                                 if (event.key === "Enter" || event.key === " ") {
                                   event.preventDefault();
+                                  setPlanDetailsDateKey(null);
                                   setPlanDetailsPlanId(plan.id);
                                 }
                               }}
@@ -4601,7 +5145,10 @@ export default function App() {
           title={planDetailsPlan?.name ?? "Plan Details"}
           subtitle="Plan details and participant responses"
           size="wide"
-          onClose={() => setPlanDetailsPlanId(null)}
+          onClose={() => {
+            setPlanDetailsPlanId(null);
+            setPlanDetailsDateKey(null);
+          }}
           headerActions={
             planDetailsPlan && canEditPlan(planDetailsPlan) ? (
               <>
@@ -4610,11 +5157,11 @@ export default function App() {
                   className="icon-action small ef-modal-head-action is-info"
                   onClick={() => {
                     const planToEdit = planDetailsPlan;
+                    const selectedDate = planDetailsDateKey;
                     setPlansListOpen(false);
                     setPlanDetailsPlanId(null);
-                    window.setTimeout(() => {
-                      openEditPlanModal(planToEdit);
-                    }, 0);
+                    setPlanDetailsDateKey(null);
+                    window.setTimeout(() => requestEditPlan(planToEdit, selectedDate), 0);
                   }}
                   title="Edit plan"
                   aria-label="Edit plan"
@@ -4629,6 +5176,7 @@ export default function App() {
                       const planIdToDelete = planDetailsPlan.id;
                       setPlansListOpen(false);
                       setPlanDetailsPlanId(null);
+                      setPlanDetailsDateKey(null);
                       window.setTimeout(() => deletePlan(planIdToDelete), 0);
                     }}
                     title="Delete plan"
@@ -4641,7 +5189,14 @@ export default function App() {
             ) : null
           }
           actions={
-            <Button variant="primary" type="button" onClick={() => setPlanDetailsPlanId(null)}>
+            <Button
+              variant="primary"
+              type="button"
+              onClick={() => {
+                setPlanDetailsPlanId(null);
+                setPlanDetailsDateKey(null);
+              }}
+            >
               Close
             </Button>
           }
@@ -4653,12 +5208,20 @@ export default function App() {
                   <h3>Details</h3>
                 </div>
                 <p className="notification-card-meta">
-                  {planDetailsPlan.fromDate} to {planDetailsPlan.toDate}
-                  {planDetailsPlan.allDay ? " (All day)" : ` | ${planDetailsPlan.fromTime} to ${planDetailsPlan.toTime}`}
+                  {planDetailsWhenLabel}
                 </p>
+                {planDetailsDateKey ? <p className="notification-card-meta">Viewing day: {planDetailsDateKey}</p> : null}
+                {planDetailsRecurrenceLabel ? <p className="notification-card-meta">Recurrence: {planDetailsRecurrenceLabel}</p> : null}
                 {planDetailsPlan.location ? <p className="notification-card-meta">Location: {planDetailsPlan.location}</p> : null}
                 {planDetailsPlan.summary ? <p className="notification-card-meta">Summary: {planDetailsPlan.summary}</p> : null}
                 <p className="notification-card-meta">Visibility: {planTargetLabel(planDetailsPlan.targetGroupIds, planDetailsPlan.isPrivate)}</p>
+                {planDetailsIsInstanceOverride && normalizeIdentity(planDetailsPlan.ownerId) === viewerOwnerId ? (
+                  <div className="ef-modal-actions">
+                    <Button type="button" variant="ghost" onClick={() => void revertPlanInstance(planDetailsPlan.id)}>
+                      Revert This Instance
+                    </Button>
+                  </div>
+                ) : null}
               </Panel>
               <Panel variant="card" borderWidth={1} className="notifications-section manager-section">
                 <div className="notifications-section-header manager-header">
@@ -4708,7 +5271,7 @@ export default function App() {
                   })}
                 </div>
                 {(() => {
-                  const viewerInvite = incomingInviteByPlanId.get(planDetailsPlan.id);
+                  const viewerInvite = incomingInviteByPlanId.get(getPlanIdentity(planDetailsPlan));
                   return viewerInvite ? (
                     <div className="notification-actions">
                       <Button type="button" variant="success" onClick={() => void handleInviteResponse(viewerInvite.id, "going")}>
@@ -4726,6 +5289,94 @@ export default function App() {
               </Panel>
             </div>
           ) : null}
+        </Modal>
+        <Modal
+          isOpen={Boolean(editScopePrompt)}
+          title="Edit Recurring Plan"
+          subtitle={editScopePrompt ? `Choose how to edit ${editScopePrompt.dateKey}` : "Choose edit scope"}
+          size="small"
+          onClose={() => setEditScopePrompt(null)}
+          actions={
+            <>
+              <Button type="button" variant="ghost" onClick={() => setEditScopePrompt(null)}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="info"
+                onClick={() => {
+                  const prompt = editScopePrompt;
+                  if (!prompt) return;
+                  const plan = allPlans.find((entry) => entry.id === prompt.planId);
+                  setEditScopePrompt(null);
+                  if (!plan) return;
+                  openEditPlanModal(plan);
+                }}
+              >
+                Entire plan
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                onClick={() => {
+                  const prompt = editScopePrompt;
+                  if (!prompt) return;
+                  const plan = allPlans.find((entry) => entry.id === prompt.planId);
+                  setEditScopePrompt(null);
+                  if (!plan) return;
+                  openEditPlanDayInstanceModal(plan, prompt.dateKey);
+                }}
+              >
+                This instance
+              </Button>
+            </>
+          }
+        >
+          <div className="ef-modal-form manager-modal">
+            <p className="notification-card-meta">
+              Editing this instance creates a one-day override and leaves the rest of the recurring plan unchanged.
+            </p>
+          </div>
+        </Modal>
+        <Modal
+          isOpen={Boolean(uninviteConfirmPrompt)}
+          title="Remove Invitee?"
+          subtitle={uninviteConfirmPrompt ? `${uninviteConfirmPrompt.personName} already responded` : "Confirm remove"}
+          size="small"
+          onClose={() => setUninviteConfirmPrompt(null)}
+          actions={
+            <>
+              <Button type="button" variant="ghost" onClick={() => setUninviteConfirmPrompt(null)}>
+                Keep invited
+              </Button>
+              <Button
+                type="button"
+                variant="delete"
+                onClick={() => {
+                  const prompt = uninviteConfirmPrompt;
+                  if (!prompt) return;
+                  setPlanInvitedIds((current) => current.filter((id) => id !== prompt.personId));
+                  setUninviteConfirmPrompt(null);
+                }}
+              >
+                Remove from plan
+              </Button>
+            </>
+          }
+        >
+          <div className="ef-modal-form manager-modal">
+            <p className="notification-card-meta">
+              {uninviteConfirmPrompt
+                ? `${uninviteConfirmPrompt.personName} responded "${
+                    uninviteConfirmPrompt.status === "going"
+                      ? "Going"
+                      : uninviteConfirmPrompt.status === "maybe"
+                        ? "Maybe"
+                        : "Can't"
+                  }". Removing will uninvite them and remove their pending invite notification.`
+                : ""}
+            </p>
+          </div>
         </Modal>
         <Modal
           isOpen={friendsListOpen}

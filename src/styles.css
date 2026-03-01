@@ -2455,11 +2455,34 @@ body,
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 100%;
+  min-height: 0;
+  overflow-anchor: none;
+  padding-bottom: 6px;
 }
 
 .plan-create-form .ef-modal-actions {
+  margin-top: 8px;
+  position: static !important;
+  bottom: auto !important;
+}
+
+.plan-create-form .plan-modal-actions {
+  display: grid;
+  gap: 14px;
   margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  padding: 10px 0 max(4px, env(safe-area-inset-bottom));
+  background: linear-gradient(
+    to bottom,
+    color-mix(in oklab, var(--ef-surface, var(--card)) 0%, transparent) 0%,
+    color-mix(in oklab, var(--ef-surface, var(--card)) 96%, transparent) 34%
+  );
+}
+
+.plan-create-modal .ef-modal-body {
+  overflow: visible;
 }
 
 .plan-calendar-row {
@@ -2557,6 +2580,13 @@ body,
   display: grid;
   gap: 8px;
   background: rgba(12, 18, 34, 0.72);
+  max-height: none;
+  overflow: visible;
+}
+
+.calendar-app .ef-modal .ef-modal-actions {
+  position: sticky;
+  bottom: 0;
 }
 
 .plan-invite-list legend {
