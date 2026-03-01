@@ -11,7 +11,7 @@
     "dev:tauri": "tauri dev",
     "build:tauri": "tauri build",
     "dev:web": "vite",
-    "build:web": "vite build",
+    "build:web": "pnpm --filter @enderfall/ui build && vite build",
     "cap:sync": "pnpm run build:web && cap sync",
     "cap:add:android": "cap add android",
     "cap:add:ios": "cap add ios",
